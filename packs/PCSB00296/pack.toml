@@ -1,0 +1,15 @@
+# Dead or Alive 5 Plus (PCSB00296, EU release, 1.00) -- bring-up pack, not verified.
+# Only facts about the game; nothing of its code or data (the format: pipeline/packconf.py).
+NAME = "Dead or Alive 5 Plus"
+REGION = "EU"
+BASE = "doa5"               # file stem of the recompiled C and the image
+SPLIT = 32                  # 32,784 functions found: ~10 MB of C a part
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libscemp4"   # the game ships libc/libfios2/libult in sce_module; libgxm/libgpu/libscemp4 are the firmware's (SceMp4: the movies)
+RUN_ENV = ""                # play: the GPU renderer, the real clock
+TEST_ENV = "RECOMP_GFX=gpu RECOMP_CLOCK=fixed"   # bring-up: the GPU path (the gate's reference is made later)
+TEST_INPUT = ""
+TEST_FRAMES = 600
+
+[versions."1.00"]
+sha256 = "48820fdd29262db7a3c0bf93c4090a652b9dd6b8aa8dfad5de8a3389d63d78cd"
+status = "supported"

@@ -898,6 +898,18 @@ static void h_wait_sema(Cpu *c) { Obj *o = by_uid(A0, SEMA); RET(o ? sema_wait(o
 static void h_poll_sema(Cpu *c) { Obj *o = by_uid(A0, SEMA); RET(o ? sema_wait(o, (int)A1, 0, 1, E_SEMA_ZERO, E_WAIT_DELETE) : E_UNKNOWN_SEMA_ID); }
 static void h_signal_sema(Cpu *c) { Obj *o = by_uid(A0, SEMA); RET(o ? sema_signal(o, (int)A1, E_SEMA_OVF) : E_UNKNOWN_SEMA_ID); }
 static void h_delete_sema(Cpu *c) { h_delete_uid(c, SEMA, E_UNKNOWN_SEMA_ID); }
+/* (uid, setCount, *numWaitThreads): every waiter wakes with WAIT_CANCEL, the count becomes setCount when that is >= 0 */
+static void h_cancel_sema(Cpu *c) {
+	Obj *o = by_uid(A0, SEMA);
+	if (!o) { RET(E_UNKNOWN_SEMA_ID); return; }
+	pthread_mutex_lock(&o->m);
+	int n = 0;
+	while (o->head) { wake(o, o->head, E_WAIT_CANCEL); n++; }
+	if ((int)A1 >= 0) o->count = (int)A1;
+	pthread_mutex_unlock(&o->m);
+	if (A2) WR32(A2, (uint32_t)n);
+	RET(0);
+}
 static void h_sema_info(Cpu *c) {   /* (uid, *SceKernelSemaInfo 0x3c) */
 	Obj *o = by_uid(A0, SEMA);
 	if (!o) { RET(E_UNKNOWN_SEMA_ID); return; }
@@ -1812,7 +1824,7 @@ const HleEntry hle_kernel[] = {
 	{"sceKernelGetStdin", h_stdin}, {"sceKernelGetStdout", h_stdout}, {"sceKernelGetStderr", h_stderr},
 	{"sceKernelCreateSema", h_create_sema}, {"sceKernelCreateSema_16XX", h_create_sema},
 	{"sceKernelWaitSema", h_wait_sema}, {"sceKernelWaitSemaCB", h_wait_sema_cb}, {"sceKernelPollSema", h_poll_sema},
-	{"sceKernelSignalSema", h_signal_sema}, {"sceKernelDeleteSema", h_delete_sema}, {"sceKernelGetSemaInfo", h_sema_info},
+	{"sceKernelSignalSema", h_signal_sema}, {"sceKernelDeleteSema", h_delete_sema}, {"sceKernelCancelSema", h_cancel_sema}, {"sceKernelGetSemaInfo", h_sema_info},
 	{"sceKernelOpenSema", h_open_sema}, {"sceKernelCloseSema", h_zero_ok}, {"sceKernelOpenMutex", h_open_mutex}, {"sceKernelCloseMutex", h_zero_ok},
 	{"sceKernelCreateEventFlag", h_create_evf}, {"sceKernelWaitEventFlag", h_wait_evf}, {"sceKernelWaitEventFlagCB", h_wait_evf_cb},
 	{"sceKernelPollEventFlag", h_poll_evf}, {"sceKernelSetEventFlag", h_set_evf}, {"sceKernelClearEventFlag", h_clear_evf},

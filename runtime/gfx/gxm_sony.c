@@ -47,6 +47,7 @@ static uint32_t bound(uint32_t v, uint32_t sentinel_mask) { return (v & 0xff0000
 
 /* bytes per texel of the uncompressed texture base formats (0: block-compressed or unknown) */
 static uint32_t tex_bpp(uint32_t format) {
+	if ((format & 0x9f000000u) == 0x95000000u) return 1;   /* P8: a palette index (its low base bits are X8U24's) */
 	switch (format & 0x1f000000u) {
 	case 0x1b000000u: case 0x19000000u: return 8;
 	case 0x0c000000u: case 0x0d000000u: case 0x0e000000u: case 0x0f000000u: case 0x10000000u: case 0x11000000u: case 0x12000000u:
@@ -76,6 +77,7 @@ static GfxTexture texture_words(uint32_t w0, uint32_t w1, uint32_t w2, uint32_t 
 	GfxTexture g = {0};
 	g.data = w2 & ~3u;
 	g.format = (w0 & 0x80000000u) | (w1 & 0x1f000000u) | ((w3 >> 16) & 0x7000u) | (srgb_on() ? ((w0 >> 27) & 3u) << 16 : 0);   /* + the gamma mode (gfx.h GFX_TEX_GAMMA), opt-in */
+	if ((g.format & 0xfe000000u) == 0x94000000u) g.palette = (w3 & 0x03ffffffu) << 6;   /* P4 / P8: the palette (word 3 bits 0-25: its address / 64, as sceGxmTextureSetPalette writes it) */
 	int log2size = type == 0 || type == 0x40000000u;   /* swizzled and cube store log2 sizes */
 	g.width = (uint16_t)(log2size ? 1u << ((w1 >> 16) & 15) : ((w1 >> 12) & 0xfff) + 1);
 	g.height = (uint16_t)(log2size ? 1u << (w1 & 15) : (w1 & 0xfff) + 1);

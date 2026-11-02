@@ -24,6 +24,9 @@
 #include "gfx_coverage.h"
 #include "settings.h"
 #include <SDL3/SDL_filesystem.h>
+#if defined(__ANDROID__)
+#include <SDL3/SDL_main.h>   /* SDLActivity calls SDL_main on its own thread: the "main thread" SDL wants (window.c) */
+#endif
 void window_run(void *(*fn)(void *), void *arg);
 
 uint8_t *recomp_mem;
@@ -691,6 +694,17 @@ int main(int argc, char **argv) {
 	if (getenv("RECOMP_MODULES")) {   /* "a.img,b.img": modules loaded with the program */
 		char list[4096]; snprintf(list, sizeof list, "%s", getenv("RECOMP_MODULES"));
 		for (char *p = strtok(list, ","); p; p = strtok(0, ",")) load_image(p);
+	}
+	/* RECOMP_PATCH="0x82e53108=0x1 ...": 32-bit words written into the loaded guest image before it runs (a data word,
+	 * a table entry, a constant). Recompiled code runs from the generated C, so this does not patch instructions. */
+	if (getenv("RECOMP_PATCH")) {
+		char list[4096]; snprintf(list, sizeof list, "%s", getenv("RECOMP_PATCH"));
+		for (char *p = strtok(list, " ,"); p; p = strtok(0, " ,")) {
+			char *eq = strchr(p, '='); if (!eq) continue;
+			uint32_t a = (uint32_t)strtoull(p, 0, 0), v = (uint32_t)strtoull(eq + 1, 0, 0);
+			WR32(a, v);
+			fprintf(stderr, "patch: %#x = %#x\n", a, v);
+		}
 	}
 	game_entry = strtoul(argv[2], 0, 16);
 	if (!guest_lookup(game_entry & ~1u)) { fprintf(stderr, "%#x is not a recompiled function\n", game_entry); return 1; }

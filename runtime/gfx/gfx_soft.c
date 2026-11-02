@@ -753,7 +753,7 @@ static void apply_swizzle(uint32_t format, int ncomp, float o[4]) {
  * SWIZZLE4 ones), 0 for formats whose components are placed by the decode itself */
 static int swizzle_ncomp(uint32_t base) {
 	return base == 0x00000000u || base == 0x01000000u || base == 0x09000000u || base == 0x0a000000u || base == 0x0b000000u || base == 0x12000000u || base == 0x88000000u ? 1
-	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || (base >= 0x85000000u && base <= 0x87000000u) ? 4
+	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || (base >= 0x85000000u && base <= 0x87000000u) || base == 0x94000000u || base == 0x95000000u ? 4
 	     : base == 0x98000000u || base == 0x99000000u ? 3 : 0;
 }
 static float small_float(uint32_t v, int mbits);
@@ -775,6 +775,7 @@ static void block_dims(uint32_t base, int *bw, int *bh, int *bytes, int *minbloc
 	case 0x86000000u: case 0x87000000u: *bw = 4; *bh = 4; *bytes = 16; return;                 /* UBC2 / UBC3 */
 	case 0x90000000u: case 0x91000000u: *bw = 2; *bh = 2; *bytes = 6; return;                  /* YUV420P2 / P3: 12 bits a texel (yuv_texel) */
 	case 0x92000000u: *bw = 1; *bh = 1; *bytes = 2; return;                                     /* YUV422 */
+	case 0x94000000u: *bw = 2; *bh = 1; *bytes = 1; return;                                     /* P4: two palette indices a byte */
 	default: *bw = *bh = 1; *bytes = (int)tex_bytes_per_texel(base); if (!*bytes) *bytes = 4; return;
 	}
 }
@@ -918,7 +919,7 @@ static uint32_t tex_bytes_per_texel(uint32_t base) {
 	case 0x05000000u: case 0x09000000u: case 0x0a000000u: case 0x0b000000u: case 0x07000000u:
 	case 0x02000000u: case 0x04000000u: return 2;                                          /* U5U6U5/U16/S16/F16/U8U8/U4U4U4U4/U1U5U5U5 */
 	case 0x98000000u: case 0x99000000u: return 3;                                          /* U8U8U8 / S8S8S8: three bytes, no padding */
-	case 0x00000000u: return 1;                                                            /* U8 */
+	case 0x00000000u: case 0x95000000u: return 1;                                          /* U8 / P8 (a palette index) */
 	default: return 0;                                                                     /* block-compressed / PVRTC / unknown: no flat per-face stride */
 	}
 }
@@ -988,6 +989,7 @@ void gfx_decode_texture_rgba8(const GfxTexture *t, uint8_t *out) {
 	 * each through texel() -- a 30 ms frame at 60 fps -- and well under a millisecond here.
 	 * RECOMP_GPU_DECODE_CHECK=1: the generic path runs too and any differing byte is reported. */
 	int fast = 0;
+	static const int8_t order4[8][4] = {{0, 1, 2, 3}, {2, 1, 0, 3}, {3, 2, 1, 0}, {1, 2, 3, 0}, {0, 1, 2, -1}, {2, 1, 0, -1}, {3, 2, 1, -1}, {1, 2, 3, -1}};   /* the SWIZZLE4 modes: the byte each of R G B A takes (-1: 1.0) */
 	if (base == 0x00000000u) {   /* U8: the one byte, placed by its SWIZZLE1 mode (apply_swizzle's table: -1 the byte, else 0 or 1) */
 		static const int k[8][4] = {{-1, 0, 0, 1}, {-1, 0, 0, 0}, {-1, 1, 1, 1}, {-1, -1, -1, -1}, {-1, -1, -1, 0}, {-1, -1, -1, 1}, {0, 0, 0, -1}, {1, 1, 1, -1}};
 		int from_r[4]; uint8_t fixed[4];
@@ -997,12 +999,23 @@ void gfx_decode_texture_rgba8(const GfxTexture *t, uint8_t *out) {
 			for (int i = 0; i < 4; i++) p[i] = from_r[i] ? r : fixed[i];
 		}
 		fast = 1;
-	} else if (base == 0x0c000000u) {   /* U8U8U8U8: bytes c0 c1 c2 c3, R G B A by default; the SWIZZLE4 modes reorder them (-1: 1.0) */
-		static const int8_t m[8][4] = {{0, 1, 2, 3}, {2, 1, 0, 3}, {3, 2, 1, 0}, {1, 2, 3, 0}, {0, 1, 2, -1}, {2, 1, 0, -1}, {3, 2, 1, -1}, {1, 2, 3, -1}};
+	} else if (base == 0x0c000000u) {   /* U8U8U8U8: bytes c0 c1 c2 c3, R G B A by default; the SWIZZLE4 modes reorder them (order4) */
 		for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
 			uint32_t v = RD32(t->data + 4 * texel_index(t, x, y)); uint8_t *p = out + 4 * (y * w + x);
 			uint8_t c[4] = { (uint8_t)(v & 0xff), (uint8_t)((v >> 8) & 0xff), (uint8_t)((v >> 16) & 0xff), (uint8_t)(v >> 24) };
-			for (int i = 0; i < 4; i++) p[i] = m[sw][i] < 0 ? 255 : c[m[sw][i]];
+			for (int i = 0; i < 4; i++) p[i] = order4[sw][i] < 0 ? 255 : c[order4[sw][i]];
+		}
+		fast = 1;
+	} else if ((base == 0x95000000u || base == 0x94000000u) && t->palette) {   /* P8 / P4: each palette entry placed once, as a U8U8U8U8 texel, then a lookup a texel (palette_entry's indices) */
+		uint8_t pal[256][4]; const uint32_t n = base == 0x95000000u ? 256 : 16;
+		for (uint32_t k = 0; k < n; k++) {
+			uint32_t v = RD32(t->palette + 4 * k);
+			uint8_t c[4] = { (uint8_t)(v & 0xff), (uint8_t)((v >> 8) & 0xff), (uint8_t)((v >> 16) & 0xff), (uint8_t)(v >> 24) };
+			for (int i = 0; i < 4; i++) pal[k][i] = order4[sw][i] < 0 ? 255 : c[order4[sw][i]];
+		}
+		for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
+			uint32_t i = texel_index(t, x, y), k = base == 0x95000000u ? RD8(t->data + i) : (RD8(t->data + i / 2) >> (4 * (i & 1))) & 15u;
+			memcpy(out + 4 * (y * w + x), pal[k], 4);
 		}
 		fast = 1;
 	} else if ((base == 0x80000000u || base == 0x81000000u || base == 0x82000000u || base == 0x83000000u) && !pvrtc_slow()) {
@@ -1087,6 +1100,12 @@ static void yuv_texel(const GfxTexture *t, uint32_t x, uint32_t y, float out[4])
 	float r = Y + 1.402f * V, g = Y - 0.344136f * U - 0.714136f * V, bl = Y + 1.772f * U;
 	out[0] = r < 0 ? 0 : r > 1 ? 1 : r; out[1] = g < 0 ? 0 : g > 1 ? 1 : g; out[2] = bl < 0 ? 0 : bl > 1 ? 1 : bl; out[3] = 1;
 }
+/* P8 / P4: texel (x, y)'s palette entry, a U8U8U8U8 word. The index is a byte, or a nibble with the even texel in the
+ * low one; no palette (a capture from before GfxTexture.palette) reads transparent black */
+static uint32_t palette_entry(const GfxTexture *t, uint32_t x, uint32_t y) {
+	uint32_t i = texel_index(t, x, y), k = (t->format & 0xff000000u) == 0x95000000u ? RD8(t->data + i) : (RD8(t->data + i / 2) >> (4 * (i & 1))) & 15u;
+	return t->palette ? RD32(t->palette + 4 * k) : 0;
+}
 static void texel_raw(const GfxTexture *t, float u, float v, float out[4]) {
 	int w = t->width ? t->width : 1, h = t->height ? t->height : 1;
 	int x = wrap_coord((int)(u * w), w, t->u_mode), y = wrap_coord((int)(v * h), h, t->v_mode);
@@ -1157,7 +1176,10 @@ static void texel_raw(const GfxTexture *t, float u, float v, float out[4]) {
 	} else if (base == 0x80000000u || base == 0x82000000u) { pvrtc_texel(t, 1, u, v, out); }   /* PVRT2BPP / PVRTII2BPP */
 	else if (base == 0x81000000u || base == 0x83000000u) { pvrtc_texel(t, 0, u, v, out); }      /* PVRT4BPP / PVRTII4BPP */
 	else if (base >= 0x90000000u && base <= 0x92000000u) yuv_texel(t, (uint32_t)x, (uint32_t)y, out);
-	else {
+	else if (base == 0x95000000u || base == 0x94000000u) {   /* P8 / P4: the palette's entry, bytes R G B A as U8U8U8U8's (its swizzle orders them the same way) */
+		uint32_t p = palette_entry(t, (uint32_t)x, (uint32_t)y);
+		out[0] = (p & 0xff) / 255.f; out[1] = ((p >> 8) & 0xff) / 255.f; out[2] = ((p >> 16) & 0xff) / 255.f; out[3] = (p >> 24) / 255.f;
+	} else {
 		static uint32_t warned[64]; static int nw;
 		int seen = 0; for (int i = 0; i < nw; i++) if (warned[i] == t->format) seen = 1;
 		if (!seen && nw < 64) { warned[nw++] = t->format; fprintf(stderr, "    soft: texture format %#x not handled\n", t->format); }

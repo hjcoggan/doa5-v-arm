@@ -28,6 +28,7 @@
  * its attribute formats, and the first words of its default uniform buffers, as the draw is
  * replayed -- where a HUD quad lands and the matrix that put it there, without a renderer trace.
  */
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,6 +67,22 @@ void *window_gpu_device(void) {
 	return dev;
 }
 
+/* a version 1 capture's DRAW (gfx_capture.c): its textures were the 16 bytes GfxTexture.palette now follows, so every
+ * field after each texture array sat that much earlier. The record may stop short of fields appended since (left 0) */
+static void draw_v1(GfxDraw *d, const uint8_t *b, uint32_t len) {
+	enum { T1 = 16 };   /* a version 1 GfxTexture */
+	const size_t tex = offsetof(GfxDraw, tex), mid = tex + sizeof d->tex, vtex = offsetof(GfxDraw, vtex), end = vtex + sizeof d->vtex;
+	const size_t mid1 = tex + 16 * T1, vtex1 = mid1 + (vtex - mid), end1 = vtex1 + 16 * T1;   /* the same places in the version 1 record */
+	uint8_t *o = (uint8_t *)d;
+	memset(d, 0, sizeof *d);
+	#define TAKE(to, from, n) do { size_t f_ = (from), n_ = (n); if (f_ < len) memcpy(o + (to), b + f_, f_ + n_ <= len ? n_ : len - f_); } while (0)
+	TAKE(0, 0, tex);
+	for (int k = 0; k < 16; k++) TAKE(tex + k * sizeof(GfxTexture), tex + k * T1, T1);
+	TAKE(mid, mid1, vtex - mid);
+	for (int k = 0; k < 16; k++) TAKE(vtex + k * sizeof(GfxTexture), vtex1 + k * T1, T1);
+	TAKE(end, end1, sizeof *d - end);
+	#undef TAKE
+}
 static void write_frame(const char *path, uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 	FILE *f = fopen(path, "wb");
 	if (!f) { perror(path); return; }
@@ -86,7 +103,7 @@ int main(int argc, char **argv) {
 	FILE *f = fopen(argv[1], "rb");
 	if (!f) { perror(argv[1]); return 1; }
 	char magic[4]; uint32_t version;
-	if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "VFCP", 4) || fread(&version, 4, 1, f) != 1 || version != 1) { fprintf(stderr, "%s: not a capture\n", argv[1]); return 1; }
+	if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "VFCP", 4) || fread(&version, 4, 1, f) != 1 || (version != 1 && version != 2)) { fprintf(stderr, "%s: not a capture\n", argv[1]); return 1; }
 	int scenes = 0, draws = 0; uint64_t membytes = 0;
 	if (getenv("RECOMP_REPLAY_WIDEN")) {   /* the HUD layout runs on presented surfaces: a capture's presents noted first (one frame presents after its scenes) */
 		extern void gfx_gpu_hud_note_present(uint32_t base);
@@ -159,7 +176,9 @@ int main(int argc, char **argv) {
 			gfx_begin_scene(&cur);
 		}
 		else if (!memcmp(tag, "DRAW", 4)) {
-			GfxDraw d; memset(&d, 0, sizeof d); memcpy(&d, buf, len < sizeof d ? len : sizeof d);   /* older captures: a shorter GfxDraw */
+			GfxDraw d;
+			if (version == 1) draw_v1(&d, buf, len);
+			else { memset(&d, 0, sizeof d); memcpy(&d, buf, len < sizeof d ? len : sizeof d); }   /* older captures: a shorter GfxDraw */
 			if (dump) {
 				printf("draw %d: v %#x f %#x prim %#x ix %#x/%#x n %u  attr", ++draws, d.vprog, d.fprog, d.prim, d.index_format, d.indices, d.count);
 				for (int k = 0; k < d.nattr; k++) printf(" %u:%u+%u f%#x c%u r%u", k, d.attr[k].stream, d.attr[k].offset, d.attr[k].format, d.attr[k].comps, d.attr[k].reg);

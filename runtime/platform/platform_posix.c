@@ -14,13 +14,26 @@
 #include <sys/resource.h>
 #if !defined(__ANDROID__)
 #include <execinfo.h>
+#else
+#include <sys/prctl.h>
+#include <unwind.h>
+#include <dlfcn.h>
 #endif
 
 void *plat_reserve(size_t bytes) {
 	void *p = mmap(0, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 	return p == MAP_FAILED ? 0 : p;
 }
-void plat_thread_name(char *buf, size_t n) { if (!n) return; buf[0] = 0; pthread_getname_np(pthread_self(), buf, n); }
+void plat_thread_name(char *buf, size_t n) {
+	if (!n) return; buf[0] = 0;
+#if defined(__ANDROID__)
+	/* bionic has no pthread_getname_np; the kernel's name is the same one pthread_setname_np sets (16 bytes at most) */
+	if (n < 16) return;
+	prctl(PR_GET_NAME, buf, 0, 0, 0);
+#else
+	pthread_getname_np(pthread_self(), buf, n);
+#endif
+}
 int plat_protect(void *p, size_t bytes, int writable) { return mprotect(p, bytes, writable < 0 ? PROT_NONE : writable ? PROT_READ | PROT_WRITE : PROT_READ); }
 size_t plat_page_size(void) { long ps = sysconf(_SC_PAGESIZE); return ps > 0 ? (size_t)ps : 4096; }
 
@@ -49,12 +62,28 @@ static void install(void) {
 }
 void plat_add_fault_hook(PlatFaultHook hook) { install(); if (nhooks < MAX_HOOKS) hooks[nhooks++] = hook; }
 void plat_set_crash_handler(PlatCrashFn fn) { crash_fn = fn; install(); }
+#if defined(__ANDROID__)
+struct Bt { FILE *f; int n; };
+static _Unwind_Reason_Code bt_cb(struct _Unwind_Context *ctx, void *arg) {
+	struct Bt *b = arg;
+	uintptr_t pc = (uintptr_t)_Unwind_GetIP(ctx);
+	if (!pc) return _URC_END_OF_STACK;
+	Dl_info di;
+	if (dladdr((void *)pc, &di) && di.dli_sname)
+		fprintf(b->f, "  %s+0x%lx (%s)\n", di.dli_sname, (unsigned long)(pc - (uintptr_t)di.dli_saddr), di.dli_fname ? di.dli_fname : "?");
+	else
+		fprintf(b->f, "  %p\n", (void *)pc);
+	return ++b->n < 48 ? _URC_NO_REASON : _URC_END_OF_STACK;
+}
+#endif
 void plat_backtrace(FILE *f) {
 #if !defined(__ANDROID__)
 	void *bt[48]; int n = backtrace(bt, 48);
 	fflush(f); backtrace_symbols_fd(bt, n, fileno(f));
 #else
-	(void)f;
+	struct Bt b = { f, 0 };
+	_Unwind_Backtrace(bt_cb, &b);
+	fflush(f);
 #endif
 }
 

@@ -16,3 +16,6 @@ launcher/obj_win/
 # kept on each machine, not shared: plans that aren't the project's yet, and this machine's defaults for the dev scripts
 docs/android.md
 dev/local.env
+# Android: the APK build and the debug key it is signed with
+android/build/
+android/debug.keystore

@@ -341,6 +341,10 @@ class Game:
         if self.windows:
             self.TD += "_win"; self.EXE += ".exe"
             if not WINDOWS: self.RUNNER = (ENV.get("WINE") or "wine").split()
+        # TARGET=android: build makes <game>_<bin>.so, the shared object SDLActivity loads as libmain.so (runtime/build.py);
+        # it is packaged into an APK, not run here
+        self.android = ENV.get("TARGET") == "android"
+        if self.android: self.TD += "_android"; self.EXE += ".so"
         # MODULES="libc ...": modules recompiled and loaded with the game, each at its own base from
         # 0x88000000; imports resolve to their exports. A name is the game's own sce_module/<name>.suprx
         # when it ships one, else the firmware's (dump/decrypted/us or sys/external: libgxm_es4, ...)

@@ -911,7 +911,8 @@ void window_run(void *(*fn)(void *), void *arg) {
 	/* the overlay's own settings (its Display page), read once here the same way render_scale_init
 	 * (gfx_gpu.c) reads "render_scale": the environment doesn't override these two, there being no
 	 * scripted test that cares what the window looks like */
-	{ char b[16]; settings_str("aspect", "fit", b, sizeof b);
+	{ char b[16]; const char *am = getenv("RECOMP_ASPECT_MODE");   /* a port's own default (an Android 4:3 screen); the overlay still changes it */
+	  if (am && *am) snprintf(b, sizeof b, "%s", am); else settings_str("aspect", "fit", b, sizeof b);
 	  aspect_mode = !strcmp(b, "stretch") ? ASPECT_STRETCH : !strcmp(b, "fill") ? ASPECT_FILL : ASPECT_FIT; }   /* window_set_aspect also saves: read it in directly instead, nothing changed yet */
 	if (settings_int("fullscreen", 0)) SDL_SetWindowFullscreen(win, true);
 	if (gpu) overlay_init(gpu, win, SDL_GetGPUSwapchainTextureFormat(gpu, win));

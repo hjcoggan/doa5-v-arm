@@ -99,6 +99,7 @@ def main(argv):
     BASE = os.path.abspath(argv[0]); OUT = os.path.abspath(argv[1])
     mods = argv[2:] or (ENV.get("RECOMP_MODULE_BASES") or "").split()
     WIN = HOSTED_WINDOWS or ENV.get("TARGET") == "windows"
+    AND = ENV.get("TARGET") == "android"
     PROFILE, VERIFY = ENV.get("PROFILE"), ENV.get("VERIFY")
     # RECOMP_CPU: the processor the code is compiled for. native (the default when a machine builds for itself): its own,
     # every instruction it has. Each player compiles their own copy, so nothing has to run anywhere else; on x86-64 the
@@ -108,17 +109,18 @@ def main(argv):
     # RECOMP_CFLAGS: more code generation flags (experiments: -O3, -flto=thin). Each set keeps its own objects.
     # The objects are kept per processor, by the name the compiler resolves native to (apple-m4, znver5): an install moved
     # to another machine rebuilds rather than running instructions its processor may not have.
-    cross = WIN and not HOSTED_WINDOWS
+    cross = (WIN or AND) and not HOSTED_WINDOWS
     cpu = "generic" if cross else (ENV.get("RECOMP_CPU") or "native")
     machine = platform.machine().lower()
     CPUFLAGS = [] if cpu == "generic" else [("-mcpu=" if machine in ("arm64", "aarch64") else "-march=") + cpu]
     extra = (ENV.get("RECOMP_CFLAGS") or "").split()
     FLAGS = ["-O2", "-ffp-contract=off"] + CPUFLAGS + extra + ["-w"] + INCLUDES
     PLATFORM = [part("platform_posix")]
+    AND_AVCODEC = []
     exe = ".exe" if HOSTED_WINDOWS else ""
     CC, CXX = ENV.get("CC"), ENV.get("CXX")
     LT = None if WIN or DARWIN else (ENV.get("ATIV_LINUX_TOOLCHAIN") or next((d for d in (os.path.join(ROOT, "toolchain"),) if os.path.isfile(os.path.join(d, "bin", "cc"))), None))
-    MT = (ENV.get("ATIV_MAC_TOOLCHAIN") or next((d for d in (os.path.join(ROOT, "toolchain"),) if os.path.isfile(os.path.join(d, "SDL3", "lib", "libSDL3.0.dylib"))), None)) if DARWIN and not WIN else None
+    MT = (ENV.get("ATIV_MAC_TOOLCHAIN") or next((d for d in (os.path.join(ROOT, "toolchain"),) if os.path.isfile(os.path.join(d, "SDL3", "lib", "libSDL3.0.dylib"))), None)) if DARWIN and not WIN and not AND else None
     if WIN:
         # (an install's own, beside the tools -- <root>/toolchain -- else the developer's)
         WT = ENV.get("ATIV_WIN_TOOLCHAIN") or next((d for d in (os.path.join(ROOT, "toolchain"),) if os.path.isdir(d)), os.path.join(os.path.expanduser("~"), "toolchains", "ativ-win"))
@@ -134,6 +136,29 @@ def main(argv):
         OUT = OUT.removesuffix(".exe") + ".exe"
         sdl_cflags = ["-I" + os.path.join(SDLW, "include")]
         sdl_libs = [os.path.join(SDLW, "lib", "libSDL3.dll.a")]   # (the import library by path: links under -static too)
+    elif AND:
+        # Android: the NDK's clang, and SDL3 built for it by runtime/platform/android/setup-toolchain.sh. The result is the
+        # shared object SDL's SDLActivity loads (libmain.so) and calls SDL_main in; the APK beside it carries libSDL3.so.
+        NDK = ENV.get("ANDROID_NDK_HOME") or ENV.get("ANDROID_NDK_ROOT") or ""
+        if not NDK or not os.path.isdir(NDK): die("TARGET=android needs ANDROID_NDK_HOME (the NDK's folder)")
+        ndk_host = "darwin-x86_64" if DARWIN else "linux-x86_64"
+        api = ENV.get("ANDROID_API") or "26"
+        tc = os.path.join(NDK, "toolchains", "llvm", "prebuilt", ndk_host, "bin")
+        cc = os.path.join(tc, f"aarch64-linux-android{api}-clang")
+        if not os.path.isfile(cc): die(f"no NDK clang at {cc}: ANDROID_NDK_HOME points at the NDK's folder")
+        if VERIFY or PROFILE: die("VERIFY/PROFILE builds: macOS and Linux only")
+        AT = ENV.get("ATIV_ANDROID_TOOLCHAIN") or (os.path.join(os.path.expanduser("~"), "Library", "Android", "sdk", "sdl3-android") if DARWIN else os.path.join(os.path.expanduser("~"), "Android", "Sdk", "sdl3-android"))
+        if not os.path.isfile(os.path.join(AT, "lib", "libSDL3.so")): die(f"no Android SDL3 at {AT}: run runtime/platform/android/setup-toolchain.sh")
+        CC, CXX = cc, os.path.join(tc, f"aarch64-linux-android{api}-clang++")
+        FLAGS += ["-fPIC", "-D__ANDROID__", "-DANDROID", "-I", os.path.join(AT, "include")]
+        sdl_cflags = ["-I" + os.path.join(AT, "include")]
+        sdl_libs = ["-L" + os.path.join(AT, "lib"), "-lSDL3"]
+        OUT = OUT.removesuffix(".so") + ".so"
+        # FFmpeg for Android (AAC and H.264 decoders, static): runtime/platform/android/setup-toolchain.sh or
+        # ATIV_ANDROID_FFMPEG. Without it movies and their sound stay on the "decoder unavailable" path.
+        ff = ENV.get("ATIV_ANDROID_FFMPEG") or (os.path.join(os.path.expanduser("~"), "Library", "Android", "sdk", "ffmpeg-android", "arm64") if DARWIN else os.path.join(os.path.expanduser("~"), "Android", "Sdk", "ffmpeg-android", "arm64"))
+        if os.path.isfile(os.path.join(ff, "lib", "libavcodec.a")) and os.path.isfile(os.path.join(ff, "lib", "libavutil.a")):
+            AND_AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(ff, "include"), os.path.join(ff, "lib", "libavcodec.a"), os.path.join(ff, "lib", "libavutil.a")]
     elif LT:
         if not os.path.isfile(os.path.join(LT, "bin", "cc")): die(f"no Linux toolchain at {LT}: run runtime/platform/linux/setup-toolchain.sh")
         if VERIFY or PROFILE: die("VERIFY/PROFILE builds: the machine's own compiler (no ATIV_LINUX_TOOLCHAIN)")
@@ -154,7 +179,7 @@ def main(argv):
     CXX = CXX or ("clang++" if shutil.which("clang++") else "c++")
     tag = "" if not CPUFLAGS else "_" + (resolved_cpu(CC, CPUFLAGS[0]) if cpu == "native" else cpu)
     if extra: tag += "_" + hashlib.sha1(" ".join(extra).encode()).hexdigest()[:8]
-    OBJ = os.path.join(os.path.dirname(BASE), "obj" + ("_prof" if PROFILE else "") + ("_verify" if VERIFY else "") + ("_win" if WIN else "") + ("_lt" if LT else "") + ("_mt" if MT else "") + tag)
+    OBJ = os.path.join(os.path.dirname(BASE), "obj" + ("_prof" if PROFILE else "") + ("_verify" if VERIFY else "") + ("_win" if WIN else "") + ("_and" if AND else "") + ("_lt" if LT else "") + ("_mt" if MT else "") + tag)
     os.makedirs(OBJ, exist_ok=True)
     # PROFILE=1: compile the guest code with its per-instruction hook (the host's profiler); objects in obj_prof/
     if PROFILE: FLAGS.append("-DRECOMP_TRACE")
@@ -181,7 +206,11 @@ def main(argv):
     work = []
     for s in srcs:
         o = os.path.join(OBJ, os.path.splitext(os.path.basename(s))[0] + ".o")
-        if not os.path.isfile(o) or newer(s, o) or newer(rt, o): work.append(([CC, "-c"] + FLAGS + [s, "-o", o], s, o, CC, False))
+        # the base file is the dispatch: one switch with a case per guest function (32,784 for DOA5+). Clang's -O2 switch
+        # lowering there is superlinear (it ran 16+ minutes on 1.3 MB); the dispatch wants a jump table, not inlining, so
+        # -O1 compiles it in seconds and the guest code keeps -O2
+        opt = ["-O1"] if os.path.abspath(s) == BASE + ".c" else []
+        if not os.path.isfile(o) or newer(s, o) or newer(rt, o): work.append(([CC, "-c"] + FLAGS + opt + [s, "-o", o], s, o, CC, False))
     # the in-game overlay (runtime/ui/overlay.cpp, this project's one C++ file) and Dear ImGui itself
     # (third_party/imgui/, MIT: see its own README for the pinned release): built once into their own
     # cached objects -- nothing here depends on which game is being linked -- and reused by that game's later builds
@@ -192,6 +221,7 @@ def main(argv):
     IMGUI = os.path.join(ROOT, "third_party", "imgui"); IMGUIOBJ = os.path.join(OBJ, "imgui"); os.makedirs(IMGUIOBJ, exist_ok=True)
     CXXFLAGS = ["-O2", "-std=c++17", "-w", "-I", IMGUI, "-I", os.path.join(IMGUI, "backends")] + INCLUDES + sdl_cflags
     if WIN: CXXFLAGS += ["-D_FILE_OFFSET_BITS=64", "-include", os.path.join(RT, "platform", "win32_compat.h")]
+    if AND: CXXFLAGS += ["-fPIC"]
     imgui_srcs = [os.path.join(IMGUI, f) for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", os.path.join("backends", "imgui_impl_sdl3.cpp"), os.path.join("backends", "imgui_impl_sdlgpu3.cpp"))] + [os.path.join(RT, "ui", "overlay.cpp")]
     # the touch card's input icons (third_party/kenney-prompts/prompts.png) as bytes overlay.cpp includes: a game's binary
     # carries them, wherever it runs from
@@ -227,7 +257,7 @@ def main(argv):
         FLAGS.append("-DRECOMP_SPIRV_CROSS")
         SPIRV_CROSS += [os.path.join(RT, "gfx", "mtl_archive.m"), "-framework", "Metal", "-framework", "Foundation"]
         FLAGS.append("-DRECOMP_MTL_ARCHIVE")
-    elif not WIN and DARWIN and not MT and pkg_exists("spirv-cross-c"):   # (a Windows build from a Mac: Vulkan's SPIR-V, no Metal)
+    elif not WIN and not AND and DARWIN and not MT and pkg_exists("spirv-cross-c"):   # (a Windows build from a Mac: Vulkan's SPIR-V, no Metal)
         # pkg-config only has a .pc for the C shim (spirv-cross-c); the backends it calls into
         # (MSL/GLSL/HLSL/reflect/core/util/cpp) are separate static libs Homebrew doesn't give a .pc
         # for, so link them explicitly, in dependency order, from the same lib dir. It's a C++ library
@@ -241,39 +271,43 @@ def main(argv):
         FLAGS.append("-DRECOMP_MTL_ARCHIVE")
     # overlay.cpp + Dear ImGui are C++: cc (clang) won't pull its runtime in for object files alone, the
     # same reasoning as the spirv-cross block's own comment above
-    CXXLIB = ["-lc++"] if DARWIN or WIN or LT else ["-lstdc++"]   # (zig's libc++ for the install's toolchain)
+    CXXLIB = ["-lc++_shared"] if AND else (["-lc++"] if DARWIN or WIN or LT else ["-lstdc++"])   # (zig's libc++ for the install's toolchain)
     # libavcodec (FFmpeg): the H.264 decoder behind sceAvcdec* (video.c) -- linked where pkg-config finds it
     # (Homebrew's ffmpeg, a Linux distribution's libavcodec-dev); without it movies fail to start, as before
     AVCODEC = []
-    if LT:   # the toolchain's static H.264-only FFmpeg, as on Windows
+    if ENV.get("RECOMP_NO_AVCODEC"): pass   # (a diagnostic build: the decoder refuses to start, as on a machine without FFmpeg)
+    elif LT:   # the toolchain's static H.264-only FFmpeg, as on Windows
         if os.path.isfile(os.path.join(LT, "ffmpeg", "lib", "libavcodec.a")): AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(LT, "ffmpeg", "include"), os.path.join(LT, "ffmpeg", "lib", "libavcodec.a"), os.path.join(LT, "ffmpeg", "lib", "libavutil.a")]
     elif MT:   # the Mac toolchain's static H.264-only FFmpeg
         if os.path.isfile(os.path.join(MT, "ffmpeg", "lib", "libavcodec.a")): AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(MT, "ffmpeg", "include"), os.path.join(MT, "ffmpeg", "lib", "libavcodec.a"), os.path.join(MT, "ffmpeg", "lib", "libavutil.a")]
-    elif not WIN and pkg_exists("libavcodec", "libavutil"):
+    elif not WIN and not AND and pkg_exists("libavcodec", "libavutil"):
         AVCODEC = ["-DRECOMP_AVCODEC"] + out_of(["pkg-config", "--cflags", "--libs", "libavcodec", "libavutil"])
     elif WIN and os.path.isfile(os.path.join(WT, "ffmpeg", "lib", "libavcodec.a")):   # Windows: the toolchain's static H.264-only FFmpeg (runtime/platform/win/setup-toolchain.sh)
         AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(WT, "ffmpeg", "include"), os.path.join(WT, "ffmpeg", "lib", "libavcodec.a"), os.path.join(WT, "ffmpeg", "lib", "libavutil.a"), "-lole32", "-luser32", "-lbcrypt"]
+    if AND: AVCODEC = AND_AVCODEC
     # libcurl: SceHttp (http.c) -- a game's HTTPS to its own (or a community) server; without it the HTTP calls stay stubs
-    CURL = ["-DRECOMP_CURL"] + out_of(["pkg-config", "--cflags", "--libs", "libcurl"]) if not WIN and not LT and not MT and pkg_exists("libcurl") else []   # (none in the Linux install's toolchain: stubs, as on Windows)
+    CURL = ["-DRECOMP_CURL"] + out_of(["pkg-config", "--cflags", "--libs", "libcurl"]) if not WIN and not LT and not MT and not AND and pkg_exists("libcurl") else []   # (none in the Linux install's toolchain: stubs, as on Windows)
     if MT: CURL = ["-DRECOMP_CURL", "-lcurl"]   # (macOS's own libcurl, its headers in the SDK)
     LIBS = ["-lm", "-lpthread", os.path.join(LT, "zlib", "lib", "libz.a") if LT else "-lz", "-ldl"]
     if WIN: LIBS = ["-L" + os.path.join(WT, "zlib", "lib"), "-lz", "-lpthread", "-lwinmm", "-lws2_32", "-static", "-Wl,--error-limit=0"]   # (ws2_32: net.c's sockets)   # Windows: libc++, libunwind and winpthreads linked in -- only SDL3.dll ships beside the .exe
+    if AND: LIBS = ["-lm", "-lz", "-ldl", "-llog", "-landroid"]   # (bionic has the threads and librt in libc; the NDK's zlib is libz)
     # the game's RUN_ENV as the binary's defaults (vitarecomp build exports it; runtime/core/main.c builtin_env): no quotes or backslashes in it
     ENVDEF = [f'-DRECOMP_BUILTIN_ENV="{ENV["RECOMP_RUN_ENV"]}"'] if ENV.get("RECOMP_RUN_ENV") else []
     # the window's icon (window.c): the repository's assets/brand PNG, macOS's drawn on its own inset grid
     icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if DARWIN else "256") + ".png")
-    if not WIN and os.path.isfile(icon): ENVDEF.append(f'-DRECOMP_ICON="{icon}"')
+    if not WIN and not AND and os.path.isfile(icon): ENVDEF.append(f'-DRECOMP_ICON="{icon}"')
     # the guest addresses the game's hooks use for this build of it (vitarecomp: the pack's GAME_ADDRS; hooks.c game_addr)
     if ENV.get("RECOMP_GAME_ADDRS"): ENVDEF.append(f'-DRECOMP_GAME_ADDRS="{ENV["RECOMP_GAME_ADDRS"]}"')
     host = [part(f) for f in (
-        "main hle libc io sysmem apputil fios psarc gxp_index kernel gpu video display gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
+        "main hle libc io sysmem apputil fios psarc gxp_index kernel gpu video audiodec display gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
         "gfx_dispatch gfx_coverage gfx_capture guestwatch metrics settings hooks motion window gpulock ngs stallprof waitstats memscan jpeg camera post "
         "ssao fsr/fsr net np http sha1 ssl_local online/m2_server online/m2_wire online/m2_rooms online/m2_proxy online/discovery online/basic_msg online/stun online/overlay online/dht online/upnp online/aes128 online/status online/crypto").split()]
     # the game's own host code (vitarecomp: every .c in packs/<title>/), in this game's build alone
     host += [f for f in (ENV.get("RECOMP_PACK_SOURCES") or "").split(os.pathsep) if f]
     objs = sorted(glob.glob(os.path.join(glob.escape(OBJ), "*.o"))) + sorted(glob.glob(os.path.join(glob.escape(IMGUIOBJ), "*.o")))
     # (Linux links libm/pthread explicitly; zlib: PSARC archives)
-    link = [CC] + FLAGS + ENVDEF + ["-Wall"] + sdl_cflags + PLATFORM + host + EXTRA + objs + sdl_libs + SPIRV_CROSS + AVCODEC + CURL + CXXLIB + LIBS + ["-o", OUT]
+    SHARED = ["-shared", "-Wl,-soname,libmain.so", "-Wl,-z,max-page-size=16384"] if AND else []
+    link = [CC] + FLAGS + ENVDEF + ["-Wall"] + SHARED + sdl_cflags + PLATFORM + host + EXTRA + objs + sdl_libs + SPIRV_CROSS + AVCODEC + CURL + CXXLIB + LIBS + ["-o", OUT]
     sys.stdout.flush()
     r = subprocess.run(link)
     if r.returncode: return r.returncode

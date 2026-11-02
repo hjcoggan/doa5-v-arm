@@ -20,6 +20,11 @@ typedef struct {   /* our layout of the game's 16-byte SceGxmTexture; u_mode/v_m
 	uint32_t data, format;
 	uint16_t width, height;
 	uint8_t min_filter, mag_filter, u_mode, v_mode;
+	/* a P4/P8 texture's palette (control word 3 bits 0-25, times 64): 16 or 256 32-bit entries, each a U8U8U8U8 texel
+	 * the format's SWIZZLE4 mode orders; 0 for every other format. Added at the end: a version 1 capture's textures are
+	 * the 16 bytes before it (gfxreplay.c lays them out again). Dead or Alive 5 Plus draws its 2D screens from P8
+	 * textures; undecoded, each sampled as the fallback magenta and the whole screen with them */
+	uint32_t palette;
 } GfxTexture;
 /* sRGB ("gamma") modes. A texture's SceGxmTextureGammaMode (control word 0 bits 27-28: R/BGR 1,
  * GR 3) rides in GfxTexture.format bits 16-17, which the format leaves unused; a colour surface's

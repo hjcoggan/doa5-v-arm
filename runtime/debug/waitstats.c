@@ -9,6 +9,7 @@
  */
 #include <pthread.h>
 #include <stdint.h>
+#include "platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,7 +65,7 @@ static WsThread *me(void) {
 		pthread_getcpuclockid(pthread_self(), &t->cid);
 #endif
 		t->cpu_at = cpu_ns(t);
-		char n[32] = ""; if (!ws_name[0]) pthread_getname_np(pthread_self(), n, sizeof n);
+		char n[32] = ""; if (!ws_name[0]) plat_thread_name(n, sizeof n);
 		snprintf(t->name, sizeof t->name, "%s", ws_name[0] ? ws_name : n[0] ? n : "(host)"); t->born = waitstats_now();
 		pthread_mutex_lock(&ws_m); if (ws_n < WS_MAX) ws_threads[ws_n++] = t; pthread_mutex_unlock(&ws_m);
 		ws_me = t;
