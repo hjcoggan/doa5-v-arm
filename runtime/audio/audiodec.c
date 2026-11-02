@@ -52,6 +52,7 @@ typedef struct {
 
 #define NDEC 16
 static int ad_log(void);
+uint32_t mp4_unit_size(uint32_t addr);   /* mp4.c: the bytes copied to this address, for a raw AAC unit */
 static Adec decs[NDEC];
 static pthread_mutex_t decs_mx = PTHREAD_MUTEX_INITIALIZER;
 static int initialized[4];   /* by type index: AT9, MP3, AAC, CELP */
@@ -307,6 +308,7 @@ static uint32_t decode_one(uint32_t ctrl) {
 	if (!d->ctx) return ERR_INVALID_HANDLE;
 	uint32_t n = esmax;
 	uint32_t given = C_ES_USED(ctrl);
+	if (!given) given = mp4_unit_size(es);   /* a raw AAC frame's length, from where the demuxer copied it */
 	if (given && given <= esmax) n = given;   /* the game said how many bytes this unit is */
 	if (d->type == TYPE_AAC && d->is_adts && esmax >= 7) {
 		uint8_t *p = G(es);

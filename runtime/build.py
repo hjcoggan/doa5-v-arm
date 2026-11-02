@@ -159,6 +159,8 @@ def main(argv):
         ff = ENV.get("ATIV_ANDROID_FFMPEG") or (os.path.join(os.path.expanduser("~"), "Library", "Android", "sdk", "ffmpeg-android", "arm64") if DARWIN else os.path.join(os.path.expanduser("~"), "Android", "Sdk", "ffmpeg-android", "arm64"))
         if os.path.isfile(os.path.join(ff, "lib", "libavcodec.a")) and os.path.isfile(os.path.join(ff, "lib", "libavutil.a")):
             AND_AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(ff, "include"), os.path.join(ff, "lib", "libavcodec.a"), os.path.join(ff, "lib", "libavutil.a")]
+            if os.path.isfile(os.path.join(ff, "lib", "libavformat.a")):
+                AND_AVCODEC = ["-DRECOMP_AVFORMAT", os.path.join(ff, "lib", "libavformat.a")] + AND_AVCODEC
     elif LT:
         if not os.path.isfile(os.path.join(LT, "bin", "cc")): die(f"no Linux toolchain at {LT}: run runtime/platform/linux/setup-toolchain.sh")
         if VERIFY or PROFILE: die("VERIFY/PROFILE builds: the machine's own compiler (no ATIV_LINUX_TOOLCHAIN)")
@@ -280,8 +282,8 @@ def main(argv):
         if os.path.isfile(os.path.join(LT, "ffmpeg", "lib", "libavcodec.a")): AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(LT, "ffmpeg", "include"), os.path.join(LT, "ffmpeg", "lib", "libavcodec.a"), os.path.join(LT, "ffmpeg", "lib", "libavutil.a")]
     elif MT:   # the Mac toolchain's static H.264-only FFmpeg
         if os.path.isfile(os.path.join(MT, "ffmpeg", "lib", "libavcodec.a")): AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(MT, "ffmpeg", "include"), os.path.join(MT, "ffmpeg", "lib", "libavcodec.a"), os.path.join(MT, "ffmpeg", "lib", "libavutil.a")]
-    elif not WIN and not AND and pkg_exists("libavcodec", "libavutil"):
-        AVCODEC = ["-DRECOMP_AVCODEC"] + out_of(["pkg-config", "--cflags", "--libs", "libavcodec", "libavutil"])
+    elif not WIN and not AND and pkg_exists("libavformat", "libavcodec", "libavutil"):
+        AVCODEC = ["-DRECOMP_AVCODEC", "-DRECOMP_AVFORMAT"] + out_of(["pkg-config", "--cflags", "--libs", "libavformat", "libavcodec", "libavutil"])
     elif WIN and os.path.isfile(os.path.join(WT, "ffmpeg", "lib", "libavcodec.a")):   # Windows: the toolchain's static H.264-only FFmpeg (runtime/platform/win/setup-toolchain.sh)
         AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(WT, "ffmpeg", "include"), os.path.join(WT, "ffmpeg", "lib", "libavcodec.a"), os.path.join(WT, "ffmpeg", "lib", "libavutil.a"), "-lole32", "-luser32", "-lbcrypt"]
     if AND: AVCODEC = AND_AVCODEC
@@ -299,7 +301,7 @@ def main(argv):
     # the guest addresses the game's hooks use for this build of it (vitarecomp: the pack's GAME_ADDRS; hooks.c game_addr)
     if ENV.get("RECOMP_GAME_ADDRS"): ENVDEF.append(f'-DRECOMP_GAME_ADDRS="{ENV["RECOMP_GAME_ADDRS"]}"')
     host = [part(f) for f in (
-        "main hle libc io sysmem apputil fios psarc gxp_index kernel gpu video audiodec display gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
+        "main hle libc io sysmem apputil fios psarc gxp_index kernel gpu video mp4 audiodec display gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
         "gfx_dispatch gfx_coverage gfx_capture guestwatch metrics settings hooks motion window gpulock ngs stallprof waitstats memscan jpeg camera post "
         "ssao fsr/fsr net np http sha1 ssl_local online/m2_server online/m2_wire online/m2_rooms online/m2_proxy online/discovery online/basic_msg online/stun online/overlay online/dht online/upnp online/aes128 online/status online/crypto").split()]
     # the game's own host code (vitarecomp: every .c in packs/<title>/), in this game's build alone

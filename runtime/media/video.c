@@ -75,6 +75,7 @@ static void h_ce_close(Cpu *c) {
 
 /* ---- the library: nothing to set up on the host; its working memory is the caller's to have allocated */
 static void h_videodec_init(Cpu *c) {
+	if (video_log()) fprintf(stderr, "video: init type %#x a1 %#x a2 %#x\n", A0, A1, A2);
 #ifdef RECOMP_AVCODEC
 	RET(A0 == SCE_VIDEODEC_TYPE_HW_AVCDEC ? 0 : SCE_AVCDEC_ERROR_INVALID_TYPE);
 #else
@@ -83,6 +84,7 @@ static void h_videodec_init(Cpu *c) {
 }
 static void h_videodec_term(Cpu *c) { RET(0); }
 static void h_videodec_query_mem(Cpu *c) {   /* (codec, const SceVideodecQueryInitInfo *, uint32_t *memSize) */
+	if (video_log()) fprintf(stderr, "video: query mem type %#x q %#x out %#x\n", A0, A1, A2);
 #ifdef RECOMP_AVCODEC
 	if (A0 != SCE_VIDEODEC_TYPE_HW_AVCDEC) { RET(SCE_AVCDEC_ERROR_INVALID_TYPE); return; }
 	if (A2) WR32(A2, 0x80000);
@@ -93,6 +95,7 @@ static void h_videodec_query_mem(Cpu *c) {   /* (codec, const SceVideodecQueryIn
 }
 static void h_avcdec_query_mem(Cpu *c) {   /* (codec, const SceAvcdecQueryDecoderInfo *, SceAvcdecDecoderInfo *) */
 	uint32_t q = A1, info = A2;
+	if (video_log()) fprintf(stderr, "video: avcdec query type %#x q %#x out %#x\n", A0, q, info);
 	if (A0 != SCE_VIDEODEC_TYPE_HW_AVCDEC) { RET(SCE_AVCDEC_ERROR_INVALID_TYPE); return; }
 	if (!q || !info) { RET(SCE_AVCDEC_ERROR_INVALID_POINTER); return; }
 	uint32_t w = RD32(q), h = RD32(q + 4), refs = RD32(q + 8);
@@ -211,6 +214,7 @@ static uint32_t take_pictures(Dec *d, uint32_t arr) {
 #endif
 
 static void h_avcdec_create(Cpu *c) {   /* (codec, SceAvcdecCtrl *, const SceAvcdecQueryDecoderInfo *) */
+	if (video_log()) fprintf(stderr, "video: create decoder type %#x ctrl %#x query %#x\n", A0, A1, A2);
 	if (A0 != SCE_VIDEODEC_TYPE_HW_AVCDEC) { RET(SCE_AVCDEC_ERROR_INVALID_TYPE); return; }
 	if (!A1 || !A2) { RET(SCE_AVCDEC_ERROR_INVALID_POINTER); return; }
 #ifdef RECOMP_AVCODEC
@@ -331,14 +335,7 @@ static void h_avcdec_flush(Cpu *c) {   /* drop everything held (a seek) */
 }
 static void h_avcdec_available(Cpu *c) { RET(0x100000); }   /* room for an access unit: the host's input is never full */
 
-static void h_mp4_fail(Cpu *c) { RET(SCE_KERNEL_ERROR_ERROR); }
-
 const HleEntry hle_video[] = {
-	{"SceMp4_05474AF0", h_mp4_fail}, {"SceMp4_20A01112", h_mp4_fail}, {"SceMp4_30E49E4D", h_mp4_fail}, {"SceMp4_32A15788", h_mp4_fail},
-	{"SceMp4_40351E1A", h_mp4_fail}, {"SceMp4_40C64DC0", h_mp4_fail}, {"SceMp4_609E57AD", h_mp4_fail}, {"SceMp4_6B69F900", h_mp4_fail},
-	{"SceMp4_7B4832FE", h_mp4_fail}, {"SceMp4_8BE0E3D3", h_mp4_fail}, {"SceMp4_920623C8", h_mp4_fail}, {"SceMp4_94E1305D", h_mp4_fail},
-	{"SceMp4_96676BA0", h_mp4_fail}, {"SceMp4_A7C09746", h_mp4_fail}, {"SceMp4_A870587F", h_mp4_fail}, {"SceMp4_CB91CEBC", h_mp4_fail},
-	{"SceMp4_D092A066", h_mp4_fail}, {"SceMp4_D2871F1C", h_mp4_fail}, {"SceMp4_EFE299C9", h_mp4_fail},
 	{"sceVideodecInitLibraryWithUnmapMem", h_videodec_init}, {"sceVideodecInitLibrary", h_videodec_init}, {"sceVideodecTermLibrary", h_videodec_term},
 	{"sceVideodecQueryMemSize", h_videodec_query_mem}, {"sceAvcdecQueryDecoderMemSize", h_avcdec_query_mem},
 	{"sceAvcdecCreateDecoder", h_avcdec_create}, {"sceAvcdecDeleteDecoder", h_avcdec_delete}, {"sceAvcdecDecode", h_avcdec_decode},

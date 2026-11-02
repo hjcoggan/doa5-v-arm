@@ -4,7 +4,7 @@ NAME = "Dead or Alive 5 Plus"
 REGION = "EU"
 BASE = "doa5"               # file stem of the recompiled C and the image
 SPLIT = 32                  # 32,784 functions found: ~10 MB of C a part
-MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libscemp4"   # the game ships libc/libfios2/libult in sce_module; libgxm/libgpu/libscemp4 are the firmware's (SceMp4: the movies)
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult"   # the game ships libc/libfios2/libult in sce_module; libgxm/libgpu are the firmware's; SceMp4 is the host HLE (mp4.c)
 RUN_ENV = ""                # play: the GPU renderer, the real clock
 TEST_ENV = "RECOMP_GFX=gpu RECOMP_CLOCK=fixed"   # bring-up: the GPU path (the gate's reference is made later)
 TEST_INPUT = ""
