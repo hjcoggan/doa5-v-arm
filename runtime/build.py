@@ -292,7 +292,7 @@ def main(argv):
     if MT: CURL = ["-DRECOMP_CURL", "-lcurl"]   # (macOS's own libcurl, its headers in the SDK)
     LIBS = ["-lm", "-lpthread", os.path.join(LT, "zlib", "lib", "libz.a") if LT else "-lz", "-ldl"]
     if WIN: LIBS = ["-L" + os.path.join(WT, "zlib", "lib"), "-lz", "-lpthread", "-lwinmm", "-lws2_32", "-static", "-Wl,--error-limit=0"]   # (ws2_32: net.c's sockets)   # Windows: libc++, libunwind and winpthreads linked in -- only SDL3.dll ships beside the .exe
-    if AND: LIBS = ["-lm", "-lz", "-ldl", "-llog", "-landroid"]   # (bionic has the threads and librt in libc; the NDK's zlib is libz)
+    if AND: LIBS = ["-lm", "-lz", "-ldl", "-llog", "-landroid", "-lvulkan"]   # (bionic has the threads and librt in libc; the NDK's zlib is libz; vulkan: the startup identity banner in gfx_gpu.c)
     # the game's RUN_ENV as the binary's defaults (vitarecomp build exports it; runtime/core/main.c builtin_env): no quotes or backslashes in it
     ENVDEF = [f'-DRECOMP_BUILTIN_ENV="{ENV["RECOMP_RUN_ENV"]}"'] if ENV.get("RECOMP_RUN_ENV") else []
     # the window's icon (window.c): the repository's assets/brand PNG, macOS's drawn on its own inset grid

@@ -47,7 +47,7 @@ enum {
 	SpvOpFOrdEqual = 180, SpvOpFOrdNotEqual = 182, SpvOpFOrdLessThanEqual = 188, SpvOpFOrdGreaterThan = 186,
 	SpvOpLogicalOr = 166, SpvOpLogicalAnd = 167, SpvOpLogicalNot = 168, SpvOpBitwiseXor = 198, SpvOpINotEqualB = 171,
 	SpvOpSLessThan = 177, SpvOpSLessThanEqual = 179, SpvOpSGreaterThanEqual = 175,
-	SpvOpBranch = 249, SpvOpBranchConditional = 250, SpvOpSelectionMerge = 247,
+	SpvOpBranch = 249, SpvOpBranchConditional = 250, SpvOpSelectionMerge = 247, SpvOpLoopMerge = 246,
 	SpvOpSNegate = 126, SpvOpShiftRightArithmetic = 195, SpvOpNot = 200, SpvOpBitFieldSExtract = 202,
 	SpvOpULessThan = 176, SpvOpUGreaterThan = 172, SpvOpUMod = 137,
 	SpvOpImage = 100, SpvOpImageFetch = 95, SpvOpImageGather = 96, SpvOpImageQuerySizeLod = 103, SpvOpDPdx = 207, SpvOpDPdy = 208,
@@ -2349,6 +2349,17 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			pcf_step[k] = result1(s, &s->func, SpvOpBitcast, t_float(s), load(s, t_u, pw));
 		}
 	}
+	struct { int header, end; } loops[8]; int nloops = 0;
+	for (int i = 0; i < n; i++) {
+		if (code[i].op == OP_BR && code[i].pred_kind == 0 && code[i].imm < 0) {
+			int hdr = i + (int)code[i].imm;
+			if (hdr >= 0 && hdr < i && nloops < 8) {
+				loops[nloops].header = hdr;
+				loops[nloops].end = i;
+				nloops++;
+			}
+		}
+	}
 	for (int tap = 0; tap < taps && ok; tap++) {
 		if (taps > 1) {
 			int side = taps == 16 ? 4 : taps == 9 ? 3 : 2;
@@ -2361,6 +2372,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			}
 		}
 		struct { int end; uint32_t merge; } brstack[8]; int nbr = 0;
+		struct { int end; uint32_t header_lbl, cont_lbl, merge; } loopstack[8]; int nloop = 0;
 		/* the if/else form the USSE compiler emits for  "if (p) { A } else { B }" :
 		 *   i:   BR p -> T1        (taken: run A at T1)
 		 *   i+1..j-1: B           (B runs when !p)
@@ -2373,7 +2385,28 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 		struct { int else_end, then_start, then_end; uint32_t then_label, merge; } pends[2]; int npend = 0;
 		for (int i = 0; i < n && ok; i++) {
 			const UOp *op = &code[i];
+			while (nloop && loopstack[nloop - 1].end < i) {
+				INS(&s->func, SpvOpLabel, loopstack[nloop - 1].merge);
+				nloop--;
+			}
 			while (nbr && brstack[nbr - 1].end <= i) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; }
+			for (int L = 0; L < nloops; L++) {
+				if (loops[L].header == i) {
+					if (nloop >= 8) { snprintf(m.err, sizeof m.err, "branch at instruction %d: loop nesting too deep", i); ok = 0; break; }
+					uint32_t header_lbl = nid(s), body_lbl = nid(s), cont_lbl = nid(s), merge_lbl = nid(s);
+					INS(&s->func, SpvOpBranch, header_lbl);
+					INS(&s->func, SpvOpLabel, header_lbl);
+					INS(&s->func, SpvOpLoopMerge, merge_lbl, cont_lbl, 0 /*None*/);
+					INS(&s->func, SpvOpBranch, body_lbl);
+					INS(&s->func, SpvOpLabel, body_lbl);
+					loopstack[nloop].end = loops[L].end;
+					loopstack[nloop].header_lbl = header_lbl;
+					loopstack[nloop].cont_lbl = cont_lbl;
+					loopstack[nloop].merge = merge_lbl;
+					nloop++;
+				}
+			}
+			if (!ok) break;
 			if (op->op == OP_BR && op->pred_kind == 0 && npend && i == pends[npend - 1].else_end) {
 				/* the else body ends: jump to the merge, start the then body at its target */
 				const int t1 = pends[npend - 1].then_start, t2 = pends[npend - 1].then_end;
@@ -2388,6 +2421,31 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			}
 			if (op->op == OP_BR) {
 				int target = i + (int)op->imm;
+				if (nloop && op->pred_kind == 0 && op->imm < 0 && i == loopstack[nloop - 1].end) {
+					INS(&s->func, SpvOpBranch, loopstack[nloop - 1].cont_lbl);
+					INS(&s->func, SpvOpLabel, loopstack[nloop - 1].cont_lbl);
+					INS(&s->func, SpvOpBranch, loopstack[nloop - 1].header_lbl);
+					continue;
+				}
+				if (nloop && op->imm > 0 && target > loopstack[nloop - 1].end) {
+					if (op->pred_kind != 0) {
+						uint32_t p = load(s, t_bool(s), pred_ptr(&g, op->pred_reg));
+						uint32_t taken = op->pred_kind == 1 ? p : result1(s, &s->func, SpvOpLogicalNot, t_bool(s), p);
+						uint32_t next_l = nid(s);
+						INS(&s->func, SpvOpSelectionMerge, next_l, 0 /*None*/);
+						INS(&s->func, SpvOpBranchConditional, taken, loopstack[nloop - 1].merge, next_l);
+						INS(&s->func, SpvOpLabel, next_l);
+						continue;
+					} else {
+						INS(&s->func, SpvOpBranch, loopstack[nloop - 1].merge);
+						uint32_t unreach_l = nid(s);
+						INS(&s->func, SpvOpLabel, unreach_l);
+						continue;
+					}
+				}
+				if (op->imm == 1 && !op->args[0]) {
+					continue;
+				}
 				if (op->pred_kind != 0 && op->imm > 0 && !op->args[0] && target <= n && npend < 2) {
 					int j = -1, t2 = -1;   /* the else form above: a later unconditional branch past target */
 					for (int k = i + 1; k < target; k++)
@@ -2476,6 +2534,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			}
 		}
 		while (ok && nbr) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; }   /* ranges ending at the program's end */
+		while (ok && nloop) { INS(&s->func, SpvOpLabel, loopstack[nloop - 1].merge); nloop--; }
 		if (ok) { if (g.is_fragment) emit_frag_epilogue(&g, &ok); else emit_vert_epilogue(&g, &ok); }
 		if (g.motion && ok && !tap) store(s, g.var_mv_cur, load(s, t_v4, g.var_pos));   /* (this frame's position, as gl_Position got it) */
 		if (taps > 1 && ok && g.is_fragment) { uint32_t col = load(s, t_v4, g.var_frag_color); if (lerp) lerp_col[tap] = col; else pcf_acc = pcf_acc ? result2(s, &s->func, SpvOpFAdd, t_v4, pcf_acc, col) : col; }

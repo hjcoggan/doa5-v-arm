@@ -36,6 +36,9 @@
 #include "mtl_archive.h"   /* this machine's archive of Metal's compiles (macOS) */
 #endif
 #include "vk_shaders.h"   /* the built-in shaders' SPIR-V twins (runtime/gfx/shaders/build.sh), for Vulkan */
+#if defined(__ANDROID__)
+#include <vulkan/vulkan.h>   /* the startup identity banner below: SDL_GPU's properties carry the name, not the IDs/versions */
+#endif
 /* RECOMP_GPU_STATS=1 timing: microseconds per frame in each stage of gfx_gpu_draw */
 #include <time.h>
 #include <errno.h>
@@ -366,6 +369,61 @@ static SDL_GPUDevice *gpu(void) { return (SDL_GPUDevice *)window_gpu_device(); }
  * VK_ERROR_DEVICE_LOST: Killzone crashed, Unit 13 froze, 2026-10-23). A device without the features is made without them,
  * the tests then off. */
 static int vk_fragment_stores;   /* a Vulkan device with fragmentStoresAndAtomics */
+#if defined(__ANDROID__)
+/* The full driver identity, once at startup. SDL_GPU's device properties name the device but carry neither the PCI IDs
+ * nor the Vulkan/driver versions, so ask Vulkan directly: a throwaway instance (the loader is already in the process)
+ * enumerates the physical devices and is destroyed at once. A second instance beside SDL's is legal, and this runs
+ * before the first frame, so it adds nothing to frame time. */
+static void vk_log_identity(void) {
+	VkApplicationInfo ai; memset(&ai, 0, sizeof ai);
+	ai.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+	ai.pApplicationName = "Project Nativ";
+	ai.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+	ai.apiVersion = VK_API_VERSION_1_2;
+	VkInstanceCreateInfo ci; memset(&ci, 0, sizeof ci);
+	ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+	ci.pApplicationInfo = &ai;
+	VkInstance inst = VK_NULL_HANDLE;
+	uint32_t inst_ver = VK_API_VERSION_1_2;
+	if (vkCreateInstance(&ci, 0, &inst) != VK_SUCCESS) {   /* an older loader: fall back a version at a time */
+		ai.apiVersion = inst_ver = VK_API_VERSION_1_1;
+		if (vkCreateInstance(&ci, 0, &inst) != VK_SUCCESS) {
+			ai.apiVersion = inst_ver = VK_API_VERSION_1_0;
+			if (vkCreateInstance(&ci, 0, &inst) != VK_SUCCESS) return;
+		}
+	}
+	uint32_t n = 0;
+	if (vkEnumeratePhysicalDevices(inst, &n, 0) == VK_SUCCESS && n > 0) {
+		VkPhysicalDevice *pds = calloc(n, sizeof *pds);
+		if (pds && vkEnumeratePhysicalDevices(inst, &n, pds) == VK_SUCCESS) {
+			for (uint32_t i = 0; i < n; i++) {
+				VkPhysicalDeviceProperties p;
+				vkGetPhysicalDeviceProperties(pds[i], &p);   /* (first device: the one SDL picks without RECOMP_GPU_LOW_POWER) */
+				char drv[192] = "";
+				if (inst_ver >= VK_API_VERSION_1_1 && p.apiVersion >= VK_API_VERSION_1_2) {
+					VkPhysicalDeviceDriverProperties dp; memset(&dp, 0, sizeof dp);
+					dp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+					VkPhysicalDeviceProperties2 p2; memset(&p2, 0, sizeof p2);
+					p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+					p2.pNext = &dp;
+					vkGetPhysicalDeviceProperties2(pds[i], &p2);
+					if (dp.driverName[0] || dp.driverInfo[0]) snprintf(drv, sizeof drv, ", \"%s\" %s", dp.driverName, dp.driverInfo);
+				}
+				/* Qualcomm packs the version as major<<24 | minor<<12 | patch (AdrenoVK prints minor.patch: "0676.53");
+				 * everyone else uses the Vulkan VK_VERSION_* layout */
+				char dv[64];
+				if (p.vendorID == 0x5143) snprintf(dv, sizeof dv, "%04u.%u (0x%08x)", (p.driverVersion >> 12) & 0xfff, p.driverVersion & 0xfff, p.driverVersion);
+				else snprintf(dv, sizeof dv, "0x%08x (%u.%u.%u)", p.driverVersion, VK_VERSION_MAJOR(p.driverVersion), VK_VERSION_MINOR(p.driverVersion), VK_VERSION_PATCH(p.driverVersion));
+				fprintf(stderr, "    gpu: vulkan %s: vendor 0x%04x, device 0x%04x, Vulkan %u.%u.%u, driver %s%s\n",
+					p.deviceName, p.vendorID, p.deviceID,
+					VK_VERSION_MAJOR(p.apiVersion), VK_VERSION_MINOR(p.apiVersion), VK_VERSION_PATCH(p.apiVersion), dv, drv);
+			}
+			free(pds);
+		}
+	}
+	vkDestroyInstance(inst, 0);
+}
+#endif
 void *gfx_gpu_create_device(void) {
 	SDL_GPUDevice *d = 0;
 #ifndef __APPLE__   /* (on Apple, Metal: SDL could otherwise find MoltenVK) */
@@ -392,6 +450,9 @@ void *gfx_gpu_create_device(void) {
 	if (d && (SDL_GetGPUShaderFormats(d) & SDL_GPU_SHADERFORMAT_METALLIB) && msl_cache_dir() && !msl_salt()) mtl_archive_on = mtl_archive_open(msl_cache_dir(), msl_lib_store);
 #endif
 	if (d) fprintf(stderr, "    gpu: %s device %s%s\n", SDL_GetGPUDeviceDriver(d), SDL_GetStringProperty(SDL_GetGPUDeviceProperties(d), SDL_PROP_GPU_DEVICE_NAME_STRING, "?"), vk_fragment_stores ? " (robustBufferAccess, fragmentStoresAndAtomics on)" : "");
+#if defined(__ANDROID__)
+	if (d && SDL_GetGPUDeviceDriver(d) && !strcmp(SDL_GetGPUDeviceDriver(d), "vulkan")) vk_log_identity();
+#endif
 	return d;
 }
 /* D24_UNORM_S8_UINT isn't supported on Metal/Apple Silicon (no 24-bit depth format at all there);

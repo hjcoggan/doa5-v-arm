@@ -425,6 +425,17 @@ static void h_system_param_int(Cpu *c) {
 	if (A0 < 1 || A0 > 7 || A0 == 3 || !A1) { RET(0x80100600u); return; }
 	WR32(A1, A0 == 1 || A0 == 2 ? 1 : 0); RET(0);
 }
+/* sceAppUtilAppParamGetInt(param, *value): the app's own parameters. The only one DOA5+ asks for is 0,
+ * at boot, and it was left unimplemented -- the call reported success but wrote nothing, so the game
+ * read whatever the destination held (zero) and went on to call itself a "Demo Version". RECOMP_APP_PARAM
+ * sets the value while we work out what a retail launch returns; the default keeps the old zero. */
+static void h_app_param_int(Cpu *c) {
+	if (!A1) { RET(0x80100600u); return; }
+	const char *e = getenv("RECOMP_APP_PARAM");
+	WR32(A1, e ? (uint32_t)strtoul(e, 0, 0) : 0);
+	if (getenv("RECOMP_APP_PARAM_LOG")) { static int n; if (n++ < 8) fprintf(stderr, "    app param %u -> %u (caller lr %#x)\n", A0, e ? (unsigned)strtoul(e, 0, 0) : 0u, c->r[14]); }
+	RET(0);
+}
 /* (id, buffer, size): only the user name (3) is a string -- "Player" (RECOMP_USERNAME overrides),
  * truncated to the buffer like strncpy plus a terminator; Killzone asks for it at boot (17 bytes:
  * the SDK's 16-character limit) */
@@ -496,6 +507,7 @@ const HleEntry hle_apputil[] = {
 	{"sceAppMgrAppParamGetString", h_app_param_string},
 	{"sceAppMgrReceiveSystemEvent", h_receive_system_event},
 	{"sceAppUtilSystemParamGetInt", h_system_param_int}, {"_sceAppMgrGetAppState", h_app_state}, {"sceSysmoduleIsLoaded", h_zero_ok},
+	{"sceAppUtilAppParamGetInt", h_app_param_int},
 	{"sceAppUtilSystemParamGetString", h_system_param_string},
 	{"sceAppUtilInit", h_zero}, {"sceAppUtilShutdown", h_zero}, {"sceAppUtilDrmOpen", h_drm_open}, {"sceAppUtilDrmClose", h_zero},   /* (SceAppUtilDrmAddcontId *, mount point): the additional content's licence -- the host has no DRM, every add-on is licensed */   /* (SceAppUtilInitParam *, SceAppUtilBootParam *): nothing to set up */
 	{"sceAppUtilReceiveAppEvent", h_receive_app_event},
