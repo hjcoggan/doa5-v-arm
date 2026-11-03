@@ -245,6 +245,13 @@ void window_set_fullscreen(int on) {
 static volatile uint32_t win_pw, win_ph;   /* the swapchain's size in pixels, as the present loop last saw it */
 int window_aspect_supported(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_ASPECT_HOOK"); v = e && *e == '1'; } return v; }
 float window_aspect_widen(void) {
+	/* RECOMP_ASPECT_43: anamorphic 4:3. The game renders with a 4/3 projection into the 960x544 frame (its own
+	 * camera hook -- a narrower horizontal view, the frame squeezed 0.75x), and the picture is then shown 4/3
+	 * wide, which on a 4:3 panel is exactly its shape. Saying 4/3 here makes present_rect treat the picture as
+	 * 4:3 and makes hud_layout narrow the 2D HUD by the same factor, so the HUD keeps its native shape instead
+	 * of being stretched with the frame. */
+	static int a43 = -1; if (a43 < 0) a43 = getenv("RECOMP_ASPECT_43") != 0;
+	if (a43) return 4.0f / 3.0f;
 	if (!window_aspect_supported()) return 1.0f;
 	static const char *env = (const char *)-1; if (env == (const char *)-1) env = getenv("RECOMP_ASPECT");   /* (read once: this runs per draw) */
 	char b[16]; if (env) snprintf(b, sizeof b, "%s", env); else settings_str("aspect_ratio", "native", b, sizeof b);   /* RECOMP_ASPECT wins (headless tests) */
