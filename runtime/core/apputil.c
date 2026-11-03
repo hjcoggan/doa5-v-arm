@@ -24,9 +24,18 @@
  * dialog is the exception: a real one, below. */
 enum { DLG_TROPHY, DLG_NETCHECK, DLG_MSG, DLG_EULA, DLG_N };
 static int dialog_open[DLG_N];
+/* how many presented frames a dialog stays up before it reports FINISHED. It was 0 for all of them
+ * ("finishes at once, as if the player confirmed it"), but DOA5+ opens a system message dialog as
+ * its last boot step and polls GetStatus in the same frame: with 0 the dialog was already gone when
+ * the next boot scene looked for it, that scene waited for a dialog state that never came again and
+ * the game sat on a black screen forever. A message dialog stays up two frames; the rest are
+ * unchanged. */
+static const int dialog_frames[DLG_N] = { 0, 0, 2, 0 };
+static uint64_t dialog_at[DLG_N];
+extern uint64_t display_frames(void);
 #define DIALOG(kind, name) \
-	static void h_##name##_init(Cpu *c) { dialog_open[kind] = 1; RET(0); } \
-	static void h_##name##_status(Cpu *c) { RET(dialog_open[kind] ? 2 : 0); } /* FINISHED : NONE */ \
+	static void h_##name##_init(Cpu *c) { dialog_open[kind] = 1; dialog_at[kind] = display_frames(); RET(0); } \
+	static void h_##name##_status(Cpu *c) { RET(dialog_open[kind] ? (display_frames() - dialog_at[kind] >= (uint64_t)dialog_frames[kind] ? 2 : 1) : 0); } /* FINISHED : RUNNING : NONE */ \
 	static void h_##name##_term(Cpu *c) { dialog_open[kind] = 0; RET(0); }
 DIALOG(DLG_TROPHY, trophy_dlg)
 DIALOG(DLG_NETCHECK, net_dlg)

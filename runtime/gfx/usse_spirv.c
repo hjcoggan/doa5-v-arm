@@ -201,6 +201,7 @@ typedef struct {
 	int uses_depth;
 	uint32_t var_win; int nwin; int win_sa[8];   /* vertex LDST: storage buffer 1 holds nwin windows of guest memory, one per SA pointer word (see ldst_pointer_sa) */
 	uint32_t ldst_img[8];                        /* fragment LDST: window w's render target, a sampled image (emit_ldst_target) */
+	uint32_t var_scratch; int has_scratch;       /* fragment LDST: thread scratch memory (container 18) */
 	uint32_t var_vin, ptr_vin_u, vindex;   /* vertex: PA input SSBO, its element-pointer type, loaded (uint) gl_VertexIndex */
 	int motion, pos_only; uint32_t var_sa_prev, var_mv_cur, var_mv_prev;   /* usse_spirv_set_motion: the previous frame's SA block, the two positions'
 	                                                                        * outputs; pos_only: the epilogue writes only the position, to var_mv_prev */
@@ -1322,18 +1323,48 @@ static uint32_t snap_fetch(Gen *g, int slot, int unit, uint32_t u, uint32_t v) {
 }
 static void emit_ldst(Gen *g, const UOp *op, const UOp *code, int i, int *ok) {
 	Spv *s = &g->s;
-	if (op->sub2) { if (!g->why[0]) snprintf(g->why, sizeof g->why, "LDST store"); *ok = 0; return; }
 	int sa = ldst_pointer_sa(code, i), w;
 	for (w = 0; w < g->nwin && g->win_sa[w] != sa; w++);
 	if (sa < 0 || w == g->nwin) { if (!g->why[0]) snprintf(g->why, sizeof g->why, "LDST base register %d.%d isn't formed from an SA pointer", op->s0.bank, op->s0.num); *ok = 0; return; }
 	int elemsz = op->args[3];
+	uint32_t wbase = sa_win_comp(g, w, 0), wlen = sa_win_comp(g, w, 1), woff = sa_win_comp(g, w, 2);   /* uvec4 win[w] = { base, bytes, word offset, 0 } */
+	if (op->sub2) {
+		static const int unit[4] = {1, 1, 1, 1};
+		for (int r = 0; r < op->reps; r++) {
+			int off0 = slot_off(g, op->repmode, op->s0.bank, r, unit, 0, ok);
+			int off1 = slot_off(g, op->repmode, op->s1.bank, r, unit, 1, ok);
+			int off2 = slot_off(g, op->repmode, op->s2.bank, r, unit, 2, ok);
+			uint32_t base = read_raw_comp(g, &op->s0, off0, 0, ok);
+			uint32_t off = op->s1.bank == BK_IMM ? c_uint(s, (uint32_t)op->s1.num * (uint32_t)elemsz) : uop2(s, SpvOpISub, read_raw_comp(g, &op->s1, off1, 0, ok), c_uint(s, 0x10000));
+			if (!op->args[0]) off = uop2(s, SpvOpIAdd, off, c_uint(s, 4));
+			uint32_t val = read_raw_comp(g, &op->s2, off2, 0, ok);
+			if (!*ok) return;
+			uint32_t addr = uop2(s, SpvOpIAdd, base, off);
+			uint32_t rel = uop2(s, SpvOpISub, addr, wbase);
+			uint32_t inw = result2(s, &s->func, SpvOpULessThan, t_bool(s), rel, wlen);
+			uint32_t idx = uop2(s, SpvOpIAdd, woff, uop2(s, SpvOpShiftRightLogical, rel, c_uint(s, 2)));
+			uint32_t b_then = nid(s), b_merge = nid(s);
+			INS(&s->func, SpvOpSelectionMerge, b_merge, 0);
+			INS(&s->func, SpvOpBranchConditional, inw, b_then, b_merge);
+			INS(&s->func, SpvOpLabel, b_then);
+			if (elemsz < 4) {
+				uint32_t shift = uop2(s, SpvOpShiftLeftLogical, uop2(s, SpvOpBitwiseAnd, rel, c_uint(s, (uint32_t)(4 - elemsz))), c_uint(s, 3));
+				uint32_t m = uop2(s, SpvOpShiftLeftLogical, c_uint(s, elemsz == 2 ? 0xFFFFu : 0xFFu), shift);
+				uint32_t oldw = load(s, t_uint(s), access2(s, g->ptr_vin_u, g->var_win, c_uint(s, 0), idx));
+				val = uop2(s, SpvOpBitwiseOr, uop2(s, SpvOpBitwiseAnd, oldw, result1(s, &s->func, SpvOpNot, t_uint(s), m)), uop2(s, SpvOpShiftLeftLogical, uop2(s, SpvOpBitwiseAnd, val, c_uint(s, elemsz == 2 ? 0xFFFFu : 0xFFu)), shift));
+			}
+			store(s, access2(s, g->ptr_vin_u, g->var_win, c_uint(s, 0), idx), val);
+			INS(&s->func, SpvOpBranch, b_merge);
+			INS(&s->func, SpvOpLabel, b_merge);
+		}
+		return;
+	}
 	uint32_t base = read_raw_comp(g, &op->s0, 0, 0, ok);
 	uint32_t off = op->s1.bank == BK_IMM ? c_uint(s, (uint32_t)op->s1.num * (uint32_t)elemsz) : uop2(s, SpvOpISub, read_raw_comp(g, &op->s1, 0, 0, ok), c_uint(s, 0x10000));
 	if (!op->args[0]) off = uop2(s, SpvOpIAdd, off, c_uint(s, 4));
 	uint32_t off2 = read_raw_comp(g, &op->s2, 0, 0, ok);
 	if (!*ok) return;
 	uint32_t addr = uop2(s, SpvOpIAdd, uop2(s, SpvOpIAdd, base, off), off2);
-	uint32_t wbase = sa_win_comp(g, w, 0), wlen = sa_win_comp(g, w, 1), woff = sa_win_comp(g, w, 2);   /* uvec4 win[w] = { base, bytes, word offset, 0 } */
 	for (int k = 0; k < op->reps; k++) {
 		uint32_t a = k ? uop2(s, SpvOpIAdd, addr, c_uint(s, (uint32_t)(k * elemsz))) : addr;
 		uint32_t rel = uop2(s, SpvOpISub, a, wbase);
@@ -1350,6 +1381,59 @@ static void emit_ldst(Gen *g, const UOp *op, const UOp *code, int i, int *ok) {
 		RegPtr p = bank_ptr(g, op->dst.bank, op->dst.num + k);
 		if (!p.ok) { *ok = 0; return; }
 		store(s, p.ptr, word);
+	}
+}
+/* LDST in a fragment program spilling to thread scratch memory (container 18): each invocation has its own
+ * private scratch array (var_scratch) of 256 words, mirroring UsseInst.thread_buf / guest scratch. */
+static void emit_ldst_scratch(Gen *g, const UOp *op, int *ok) {
+	Spv *s = &g->s;
+	int elemsz = op->args[3];
+	static const int unit[4] = {1, 1, 1, 1};
+	if (op->sub2) {
+		/* LDST store */
+		for (int r = 0; r < op->reps; r++) {
+			int off0 = slot_off(g, op->repmode, op->s0.bank, r, unit, 0, ok);
+			int off1 = slot_off(g, op->repmode, op->s1.bank, r, unit, 1, ok);
+			int off2 = slot_off(g, op->repmode, op->s2.bank, r, unit, 2, ok);
+			uint32_t base = read_raw_comp(g, &op->s0, off0, 0, ok);
+			uint32_t off = op->s1.bank == BK_IMM ? c_uint(s, (uint32_t)op->s1.num * (uint32_t)elemsz) : uop2(s, SpvOpISub, read_raw_comp(g, &op->s1, off1, 0, ok), c_uint(s, 0x10000));
+			if (!op->args[0]) off = uop2(s, SpvOpIAdd, off, c_uint(s, 4));
+			uint32_t val = read_raw_comp(g, &op->s2, off2, 0, ok);
+			if (!*ok) return;
+			uint32_t addr = uop2(s, SpvOpIAdd, base, off);
+			uint32_t idx = uop2(s, SpvOpBitwiseAnd, uop2(s, SpvOpShiftRightLogical, addr, c_uint(s, 2)), c_uint(s, 255));
+			if (elemsz < 4) {
+				uint32_t shift = uop2(s, SpvOpShiftLeftLogical, uop2(s, SpvOpBitwiseAnd, addr, c_uint(s, (uint32_t)(4 - elemsz))), c_uint(s, 3));
+				uint32_t m = uop2(s, SpvOpShiftLeftLogical, c_uint(s, elemsz == 2 ? 0xFFFFu : 0xFFu), shift);
+				uint32_t oldw = load(s, t_uint(s), access1(s, g->ptr_priv_u, g->var_scratch, idx));
+				val = uop2(s, SpvOpBitwiseOr, uop2(s, SpvOpBitwiseAnd, oldw, result1(s, &s->func, SpvOpNot, t_uint(s), m)), uop2(s, SpvOpShiftLeftLogical, uop2(s, SpvOpBitwiseAnd, val, c_uint(s, elemsz == 2 ? 0xFFFFu : 0xFFu)), shift));
+			}
+			store(s, access1(s, g->ptr_priv_u, g->var_scratch, idx), val);
+		}
+	} else {
+		/* LDST load */
+		int off0 = slot_off(g, op->repmode, op->s0.bank, 0, unit, 0, ok);
+		int off1 = slot_off(g, op->repmode, op->s1.bank, 0, unit, 1, ok);
+		int off2 = slot_off(g, op->repmode, op->s2.bank, 0, unit, 2, ok);
+		uint32_t base = read_raw_comp(g, &op->s0, off0, 0, ok);
+		uint32_t off = op->s1.bank == BK_IMM ? c_uint(s, (uint32_t)op->s1.num * (uint32_t)elemsz) : uop2(s, SpvOpISub, read_raw_comp(g, &op->s1, off1, 0, ok), c_uint(s, 0x10000));
+		if (!op->args[0]) off = uop2(s, SpvOpIAdd, off, c_uint(s, 4));
+		uint32_t off2_val = read_raw_comp(g, &op->s2, off2, 0, ok);
+		if (!*ok) return;
+		uint32_t addr = uop2(s, SpvOpIAdd, uop2(s, SpvOpIAdd, base, off), off2_val);
+		for (int k = 0; k < op->reps; k++) {
+			uint32_t a = k ? uop2(s, SpvOpIAdd, addr, c_uint(s, (uint32_t)(k * elemsz))) : addr;
+			uint32_t idx = uop2(s, SpvOpBitwiseAnd, uop2(s, SpvOpShiftRightLogical, a, c_uint(s, 2)), c_uint(s, 255));
+			uint32_t word = load(s, t_uint(s), access1(s, g->ptr_priv_u, g->var_scratch, idx));
+			if (elemsz < 4) {
+				uint32_t shift = uop2(s, SpvOpShiftLeftLogical, uop2(s, SpvOpBitwiseAnd, a, c_uint(s, (uint32_t)(4 - elemsz))), c_uint(s, 3));
+				word = uop2(s, SpvOpBitwiseAnd, uop2(s, SpvOpShiftRightLogical, word, shift), c_uint(s, elemsz == 2 ? 0xFFFFu : 0xFFu));
+			}
+			if (op->dst.bank == BK_IDXD1 || op->dst.bank == BK_IDXD2) continue;
+			RegPtr p = bank_ptr(g, op->dst.bank, op->dst.num + k);
+			if (!p.ok) { *ok = 0; return; }
+			store(s, p.ptr, word);
+		}
 	}
 }
 /* LDST in a fragment program: its pointers (the SA words of ldst_pointer_sa) lie in a GPU render target -- Killzone's
@@ -2004,15 +2088,23 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 	/* pre-scan (before any code is emitted: everything declared here may be referenced by the
 	 * function body, and SPIR-V ids must be defined before use) */
 	int uses_depth = 0; int ok = 1;
+	if (g.is_fragment) {
+		for (int i = 0; i < n; i++) if (code[i].op == OP_LDST && code[i].sub2) { g.has_scratch = 1; break; }
+	}
 	for (int i = 0; i < n; i++) {
 		if (code[i].op == OP_DEPTHF) uses_depth = 1;
 		if (code[i].op == OP_SMP) {
 			int unit = resolve_smp_unit(&code[i], sa_tex_unit);
 			if (unit >= 0 && sampler_slot(&g, unit) < 0 && g.nsmp < 16) g.smp_units[g.nsmp++] = unit;
 		}
-		if (code[i].op == OP_LDST && !code[i].sub2) {   /* a load: which SA word its address comes from (a fragment program's: a render target, emit_ldst_target) */
-			int sa = ldst_pointer_sa(code, i), k;
-			if (sa >= 0) { for (k = 0; k < g.nwin && g.win_sa[k] != sa; k++); if (k == g.nwin && g.nwin < 8) g.win_sa[g.nwin++] = sa; }
+		if (code[i].op == OP_LDST) {
+			if (!g.is_fragment) {   /* vertex LDST (load or store): which SA word its address comes from (var_win) */
+				int sa = ldst_pointer_sa(code, i), k;
+				if (sa >= 0) { for (k = 0; k < g.nwin && g.win_sa[k] != sa; k++); if (k == g.nwin && g.nwin < 8) g.win_sa[g.nwin++] = sa; }
+			} else if (!g.has_scratch && !code[i].sub2) {   /* a fragment program's render target load: emit_ldst_target */
+				int sa = ldst_pointer_sa(code, i), k;
+				if (sa >= 0) { for (k = 0; k < g.nwin && g.win_sa[k] != sa; k++); if (k == g.nwin && g.nwin < 8) g.win_sa[g.nwin++] = sa; }
+			}
 		}
 	}
 	if (g.is_fragment && fl) for (int i = 0; i < fl->niters; i++) if (fl->iters[i].is_tex) {
@@ -2039,6 +2131,10 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 		uint32_t false4 = nid(s); INS(&s->types, SpvOpConstantFalse, t_bool(s), false4);
 		uint32_t init4 = nid(s); { uint32_t a[6] = {arr4b, init4, false4, false4, false4, false4}; ins(&s->types, SpvOpConstantComposite, 6, a); }
 		g.var_p = global_var(s, t_ptr(s, SpvStoragePrivate, arr4b), SpvStoragePrivate, init4);
+	}
+	if (g.has_scratch) {
+		uint32_t arr256 = t_array(s, t_u, c_uint(s, 256), 256);
+		g.var_scratch = global_var(s, t_ptr(s, SpvStoragePrivate, arr256), SpvStoragePrivate, const_null_array(s, arr256));
 	}
 
 	/* SA: a 256-word uniform buffer (Block-decorated struct wrapping the array), set=(frag?3:1) binding=0.
@@ -2265,11 +2361,49 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			}
 		}
 		struct { int end; uint32_t merge; } brstack[8]; int nbr = 0;
+		/* the if/else form the USSE compiler emits for  "if (p) { A } else { B }" :
+		 *   i:   BR p -> T1        (taken: run A at T1)
+		 *   i+1..j-1: B           (B runs when !p)
+		 *   j:   BR -> T2          (unconditional: B ends, skip A)
+		 *   T1..T2-1: A
+		 *   T2: merge
+		 * It is one OpSelectionMerge with the else body B first and the then body A after an
+		 * OpBranch to the merge, so the pending entry carries the then-label until the
+		 * unconditional branch at j is reached and the loop is sent to T1. */
+		struct { int else_end, then_start, then_end; uint32_t then_label, merge; } pends[2]; int npend = 0;
 		for (int i = 0; i < n && ok; i++) {
 			const UOp *op = &code[i];
 			while (nbr && brstack[nbr - 1].end <= i) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; }
+			if (op->op == OP_BR && op->pred_kind == 0 && npend && i == pends[npend - 1].else_end) {
+				/* the else body ends: jump to the merge, start the then body at its target */
+				const int t1 = pends[npend - 1].then_start, t2 = pends[npend - 1].then_end;
+				uint32_t thenl = pends[npend - 1].then_label, merge = pends[npend - 1].merge;
+				INS(&s->func, SpvOpBranch, merge);
+				INS(&s->func, SpvOpLabel, thenl);
+				if (nbr >= 8) { snprintf(m.err, sizeof m.err, "branch at instruction %d: if/else nesting too deep", i); ok = 0; break; }
+				brstack[nbr].end = t2; brstack[nbr].merge = merge; nbr++;
+				npend--;
+				i = t1 - 1;
+				continue;
+			}
 			if (op->op == OP_BR) {
 				int target = i + (int)op->imm;
+				if (op->pred_kind != 0 && op->imm > 0 && !op->args[0] && target <= n && npend < 2) {
+					int j = -1, t2 = -1;   /* the else form above: a later unconditional branch past target */
+					for (int k = i + 1; k < target; k++)
+						if (code[k].op == OP_BR && code[k].pred_kind == 0 && !code[k].args[0] && code[k].imm > 0 && k + (int)code[k].imm > target) { j = k; t2 = k + (int)code[k].imm; break; }
+					if (j > 0 && t2 <= n && !(nbr && target > brstack[nbr - 1].end)) {
+						uint32_t p = load(s, t_bool(s), pred_ptr(&g, op->pred_reg));
+						uint32_t taken = op->pred_kind == 1 ? p : result1(s, &s->func, SpvOpLogicalNot, t_bool(s), p);
+						uint32_t thenl = nid(s), merge = nid(s), else_l = nid(s);
+						INS(&s->func, SpvOpSelectionMerge, merge, 0 /*None*/);
+						INS(&s->func, SpvOpBranchConditional, taken, thenl, else_l);
+						INS(&s->func, SpvOpLabel, else_l);
+						pends[npend].else_end = j; pends[npend].then_start = target; pends[npend].then_end = t2;
+						pends[npend].then_label = thenl; pends[npend].merge = merge; npend++;
+						continue;
+					}
+				}
 				if (op->pred_kind == 0 || op->imm <= 0 || op->args[0] || target > n || (nbr && target > brstack[nbr - 1].end) || nbr >= 8) {
 					snprintf(m.err, sizeof m.err, "branch at instruction %d (%s, offset %d) outside the structured forms translated", i, op->pred_kind ? "predicated" : "unconditional", (int)op->imm); ok = 0; break;
 				}
@@ -2326,7 +2460,11 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			case OP_KILL: if (!g.is_fragment) ok = 0; else emit_kill(&g, op, &ok); break;
 			case OP_DEPTHF: emit_depthf(&g, op, &ok); break;
 			case OP_LIMM: emit_limm(&g, op, &ok); break;
-			case OP_LDST: if (g.is_fragment) emit_ldst_target(&g, op, code, i, &ok); else emit_ldst(&g, op, code, i, &ok); break;
+			case OP_LDST:
+				if (g.has_scratch) emit_ldst_scratch(&g, op, &ok);
+				else if (g.is_fragment) emit_ldst_target(&g, op, code, i, &ok);
+				else emit_ldst(&g, op, code, i, &ok);
+				break;
 			default: ok = 0; break;
 			}
 			if (pred_merge) { INS(&s->func, SpvOpBranch, pred_merge); INS(&s->func, SpvOpLabel, pred_merge); }
