@@ -5,6 +5,7 @@ import android.os.Bundle;
 import android.system.Os;
 import android.system.OsConstants;
 import android.util.Log;
+import android.content.pm.ActivityInfo;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -81,6 +82,15 @@ public class NativActivity extends SDLActivity {
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) immersive(false);
+    }
+
+    /* SDL asks for the window's orientation after it creates/resizes it; with no SDL_HINT_ORIENTATIONS it chooses
+     * FULL_USER, which follows the sensor and turned this port portrait (960x1280) whenever the handheld was held
+     * upright -- the 16:9 Vita frame then got fill-cropped to a slice. The manifest says landscape, but this call
+     * runs later and wins, so override it: sensor landscape, both directions, never portrait. */
+    @Override
+    public void setOrientationBis(int w, int h, boolean resizable, String hint) {
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
     }
 
     private File images() {
