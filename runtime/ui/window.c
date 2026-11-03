@@ -251,7 +251,7 @@ float window_aspect_widen(void) {
 	 * 4:3 and makes hud_layout narrow the 2D HUD by the same factor, so the HUD keeps its native shape instead
 	 * of being stretched with the frame. */
 	static int a43 = -1; if (a43 < 0) a43 = getenv("RECOMP_ASPECT_43") != 0;
-	if (a43) return 4.0f / 3.0f;
+	if (a43) return 4.0f / 3.0f;   /* the HUD is narrowed by this and the display stretches it back */   /* 0.7556: the picture is 4:3, i.e. this much wider than the native 16:9 frame */
 	if (!window_aspect_supported()) return 1.0f;
 	static const char *env = (const char *)-1; if (env == (const char *)-1) env = getenv("RECOMP_ASPECT");   /* (read once: this runs per draw) */
 	char b[16]; if (env) snprintf(b, sizeof b, "%s", env); else settings_str("aspect_ratio", "native", b, sizeof b);   /* RECOMP_ASPECT wins (headless tests) */
@@ -275,7 +275,8 @@ static void present_rect(float ww, float wh, float sw, float sh,
 		*dx = 0; *dy = 0; *dw = ww; *dh = wh;
 		break;
 	case ASPECT_FILL: {
-		float wa = ww / wh, sa = (960.0f / 544.0f) * window_aspect_widen();   /* the picture's shape, whatever the frame's pixel ratio (gfx_gpu.c may render it wider) */
+		static int a43 = -1; if (a43 < 0) a43 = getenv("RECOMP_ASPECT_43") != 0;
+		float wa = ww / wh, sa = a43 ? 4.0f / 3.0f : (960.0f / 544.0f) * window_aspect_widen();   /* the picture's shape, whatever the frame's pixel ratio (gfx_gpu.c may render it wider; RECOMP_ASPECT_43: the 960x544 frame is shown as a 4:3 picture) */
 		if (wa > sa) { *sw_out = sw; *sh_out = sh * sa / wa; *sx = 0; *sy = (sh - *sh_out) * 0.5f; }
 		else { *sh_out = sh; *sw_out = sw * wa / sa; *sy = 0; *sx = (sw - *sw_out) * 0.5f; }
 		*dx = 0; *dy = 0; *dw = ww; *dh = wh;

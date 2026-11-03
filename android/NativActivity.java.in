@@ -197,6 +197,7 @@ public class NativActivity extends SDLActivity {
             put("RECOMP_ASPECT_43", "1");
             put("RECOMP_HUD_DRAWS", "2d");
         }
+        Log.i(TAG, "aspect: tall=" + tall + " ext=" + ext + " aspect43=" + (System.getenv("RECOMP_ASPECT_43") != null || new File(ext, "aspect_43").exists()));
 
         if (HAS_SHADERS && copyAsset("shaders.txt", new File(getFilesDir(), "shaders.txt"))) {
             put("RECOMP_SHADER_RECIPES_SHIPPED", new File(getFilesDir(), "shaders.txt").getAbsolutePath());

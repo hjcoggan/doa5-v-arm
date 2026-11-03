@@ -2676,7 +2676,7 @@ hit:
 static int hud_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_HUD_DRAWS"); v = !e ? 0 : !strcmp(e, "scene") ? 2 : !strcmp(e, "2d") ? 1 : 0; } return v; }
 int gfx_gpu_hud_supported(void) { return hud_draws() != 0; }
 static int hud_classify(const GfxDraw *d, float out[4]) {   /* 1: a HUD draw, its NDC extent in out */
-	if (window_aspect_widen() < 1.01f || !hud_mode_cur || !hud_draws()) return 0;
+	{ float k0 = window_aspect_widen(); if (fabsf(k0 - 1.0f) < 0.01f || !hud_mode_cur || !hud_draws()) return 0; }   /* (4:3 anamorphic narrows: k < 1) */
 	uint64_t t0 = us_now(); float b[6];
 	int ok = gfx_draw_clip_bounds(d, 16, b), hud = ok && (hud_draws() == 2 || (b[4] > 0.999f && b[5] < 1.001f)) && b[1] - b[0] < 1.8f && b[3] - b[2] < 1.8f;   /* (full height: a backdrop, see above) */
 	t_hud += us_now() - t0;
@@ -4323,7 +4323,7 @@ static void hud_layout(void) {
 	const float k = window_aspect_widen();
 	int idx[256], n = 0;
 	for (int i = 0; i < batch.n && n < 256; i++) if (batch.d[i].hud) idx[n++] = i;
-	if (!n || k < 1.01f) return;
+	if (!n || fabsf(k - 1.0f) < 0.01f) return;
 	int par[256]; float g[256][4];
 	for (int a = 0; a < n; a++) {   /* containment: the largest earlier draw holding 60% of this one's box -- a panel's contents
 		 * come after it; what was drawn before is behind it (Uncharted's main-menu labels under a dialog, which went with it) */
