@@ -11,6 +11,7 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.view.Display;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -84,10 +85,22 @@ public class NativActivity extends SDLActivity {
         String e = System.getenv("RECOMP_DISPLAY_HZ");
         if (e != null && e.trim().equals("120")) hz = 120f;
         else { File b = getExternalFilesDir(null); if (b == null) b = getFilesDir(); if (new File(b, "display_hz_120").exists()) hz = 120f; }
+        // Pick the supported display mode whose refresh rate is nearest the one we want: preferredRefreshRate alone
+        // is only a hint and Android kept the 120 Hz mode, so present the mode id instead (both modes are 1280x960).
+        int modeId = -1;
+        if (Build.VERSION.SDK_INT >= 23) {
+            Display d = w.getWindowManager().getDefaultDisplay();
+            float best = 1e9f;
+            for (Display.Mode m : d.getSupportedModes()) {
+                float diff = Math.abs(m.getRefreshRate() - hz);
+                if (diff < best) { best = diff; modeId = m.getModeId(); }
+            }
+        }
         WindowManager.LayoutParams lp = w.getAttributes();
         lp.preferredRefreshRate = hz;
+        if (modeId >= 0) lp.preferredDisplayModeId = modeId;
         w.setAttributes(lp);
-        Log.i(TAG, "display: preferred refresh " + hz + " Hz");
+        Log.i(TAG, "display: refresh " + hz + " Hz, mode id " + modeId);
     }
 
     @Override
