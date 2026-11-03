@@ -15,6 +15,7 @@
  * only end up in the same place. The callback form is accepted and ignored.
  */
 #include "hle.h"
+#include "platform.h"
 #include <stdint.h>
 
 #ifdef RECOMP_AVFORMAT
@@ -113,10 +114,8 @@ static int demux(Mp4 *m) {
 			AVStream *st = m->fmt->streams[i];
 			enum AVCodecID id = st->codecpar->codec_id;
 			int vid = id == AV_CODEC_ID_H264;
-			if ((id != AV_CODEC_ID_H264 && id != AV_CODEC_ID_AAC) || (pass == 0) != vid) {
-				if (pass == 1 || !vid) st->discard = AVDISCARD_ALL;
-				continue;
-			}
+			if (id != AV_CODEC_ID_H264 && id != AV_CODEC_ID_AAC) { st->discard = AVDISCARD_ALL; continue; }
+			if ((pass == 0) != vid) continue;   /* (taken on the other pass) */
 			if (m->nstreams == STREAMS) { st->discard = AVDISCARD_ALL; continue; }
 			unsigned k = m->nstreams++;
 			m->streams[k] = (int)i; m->video[k] = vid;
@@ -203,7 +202,7 @@ static int next_unit(Mp4 *m, unsigned *ours) {
 	for (;;) {
 		av_packet_unref(m->unit);
 		int r = av_read_frame(m->fmt, m->unit);
-		if (r == AVERROR_EOF) return 1;
+		if (r == AVERROR_EOF) { if (mp4_log()) { static int e2; if (e2++ < 3) fprintf(stderr, "mp4: av_read_frame EOF\n"); } return 1; }
 		if (r < 0) return r;
 		unsigned k = 0;
 		while (k < m->nstreams && m->streams[k] != m->unit->stream_index) k++;
@@ -212,20 +211,21 @@ static int next_unit(Mp4 *m, unsigned *ours) {
 			if (av_bsf_send_packet(m->annexb[k], m->unit) < 0) return -1;
 			r = av_bsf_receive_packet(m->annexb[k], m->unit);
 			if (r == AVERROR(EAGAIN)) continue;
-			if (r < 0) return r;
+			if (r < 0) { if (mp4_log()) { char eb[64]; av_strerror(r, eb, sizeof eb); fprintf(stderr, "mp4: bsf receive: %s\n", eb); } return r; }
 		}
 		*ours = k; return 0;
 	}
 }
 static uint64_t ticks(const AVStream *st, int64_t ts) {
-	return ts == AV_NOPTS_VALUE ? 0 : (uint64_t)av_rescale_q(ts, st->time_base, (AVRational){1, 90000});
+	return ts == AV_NOPTS_VALUE ? 0 : (uint64_t)av_rescale_q(ts, st->time_base, (AVRational){1, 10000});
 }
 static uint32_t next_unit_hle(Cpu *c) {   /* (handle, SceMp4Unit *): 0, 1 at the end, <0 error */
+	{ static int d = -1; if (d < 0) { const char *e = getenv("RECOMP_MP4_DELAY_US"); d = e ? atoi(e) : 0; } if (d > 0) plat_sleep_ns((uint64_t)d * 1000); }
 	Mp4 *m = file_of(A0); uint32_t unit = A1;
 	if (!m || !unit) return 0x80000000u;
 	unsigned k = 0; int r = next_unit(m, &k);
 	m->has_unit = r == 0;
-	if (r) return r > 0 ? 1u : 0x80000000u;
+	if (r) { static int en; if (mp4_log() && en++ < 3) fprintf(stderr, "mp4: next unit ended: %d\n", r); return r > 0 ? 1u : 0x80000000u; }
 	const AVStream *st = m->fmt->streams[m->streams[k]];
 	int64_t pts = m->unit->pts != AV_NOPTS_VALUE ? m->unit->pts : m->unit->dts;
 	memset(G(unit), 0, 0x38);

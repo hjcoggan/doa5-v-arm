@@ -58,10 +58,11 @@ static void h_ce_alloc(Cpu *c) {
 	pthread_mutex_lock(&blocks_mx);
 	if (id < 8 && blocks[id].open) {
 		UnmapBlock *b = &blocks[id];
-		uint32_t at = (b->base + b->used + align - 1) & ~(align - 1);
+		uint32_t at = b->base + ((b->used + align - 1) & ~(align - 1));   /* aligned within the block: the host decoder keeps its own memory */
 		if (at + size <= b->base + b->size) { a = at; b->used = at + size - b->base; }
 	}
 	pthread_mutex_unlock(&blocks_mx);
+	if (video_log()) fprintf(stderr, "video: codec engine alloc id %u size %#x align %#x -> %#x\n", id + 1, size, A2, a);
 	RET(a);
 }
 static void h_ce_free(Cpu *c) { RET(0); }   /* (the ranges go with the block) */
@@ -109,6 +110,10 @@ static void h_avcdec_query_mem(Cpu *c) {   /* (codec, const SceAvcdecQueryDecode
 }
 
 #ifdef RECOMP_AVCODEC
+#ifdef __ANDROID__
+/* the toolchain's H.264-only libavcodec leaves this out while h2645_sei.o still refers to it (AV1 film grain, never used here) */
+void ff_aom_uninit_film_grain_params(void *p) { (void)p; }
+#endif
 typedef struct {
 	AVCodecContext *ctx; AVPacket *pkt; AVFrame *frm;
 	uint8_t *buf; size_t cap;     /* the access unit, in Annex B with libavcodec's padding */

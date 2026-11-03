@@ -174,6 +174,7 @@ static void h_create(Cpu *c) {
 		WR32(ctrl + 16, (uint32_t)(ci.superframeSize < 1024 ? ci.superframeSize : 1024));
 		WR32(ctrl + 28, (uint32_t)(ci.frameSamples * ci.channels * 2));
 		RET(0);
+		return;
 	}
 #ifdef RECOMP_AVCODEC
 	case TYPE_AAC: {
@@ -204,6 +205,7 @@ static void h_create(Cpu *c) {
 		WR32(ctrl + 28, (uint32_t)((d->channels > 0 ? d->channels : 2) * 2048 * 2 * (sbr ? 2 : 1)));
 		if (ad_log()) fprintf(stderr, "audiodec: AAC ready: ch %d rate %d adts %d sbr %d\n", d->channels, d->sample_rate, d->is_adts, sbr);
 		RET(0);
+		return;
 	}
 	case TYPE_MP3: {
 		d->channels = (int)RD32(info + 4);
@@ -218,6 +220,7 @@ static void h_create(Cpu *c) {
 		WR32(ctrl + 16, 1441);
 		WR32(ctrl + 28, (uint32_t)((d->channels > 0 ? d->channels : 2) * 1152 * 2));
 		RET(0);
+		return;
 	}
 #endif
 	default:
@@ -226,6 +229,7 @@ static void h_create(Cpu *c) {
 	}
 }
 
+static void h_create_l(Cpu *c) { uint32_t a0=A0,a1=A1; h_create(c); if (ad_log()) fprintf(stderr, "audiodec: create(%#x,%#x) -> %#x\n", a0, a1, c->r[0]); }
 static void h_delete(Cpu *c) {
 	uint32_t ctrl = A0, err;
 	if (!ctrl_ok(ctrl, &err)) { RET(err); return; }
@@ -363,6 +367,7 @@ static void h_internal_error(Cpu *c) {
 static void h_create_external(Cpu *c) {   /* (ctrl, type, vaContext, contextSize): the host keeps its own memory */
 	uint32_t ctrl = A0, type = A1;
 	h_create(c);   /* reads ctrl/type from the same registers */
+	if (ad_log()) fprintf(stderr, "audiodec: create_external(%#x,%#x) -> %#x\n", ctrl, type, c->r[0]);
 	(void)ctrl; (void)type;
 }
 static void h_delete_external(Cpu *c) {
@@ -374,7 +379,7 @@ static void h_delete_external(Cpu *c) {
 const HleEntry hle_audiodec[] = {
 	{"sceAudiodecInitLibrary", h_init}, {"sceAudiodecTermLibrary", h_term},
 	{"sceAudiodecGetContextSize", h_context_size},
-	{"sceAudiodecCreateDecoder", h_create}, {"sceAudiodecCreateDecoderExternal", h_create_external},
+	{"sceAudiodecCreateDecoder", h_create_l}, {"sceAudiodecCreateDecoderExternal", h_create_external},
 	{"sceAudiodecDeleteDecoder", h_delete}, {"sceAudiodecDeleteDecoderExternal", h_delete_external},
 	{"sceAudiodecDecode", h_decode}, {"sceAudiodecDecodeNFrames", h_decode_nframes},
 	{"sceAudiodecClearContext", h_clear}, {"sceAudiodecGetInternalError", h_internal_error},
