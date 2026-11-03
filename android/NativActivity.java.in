@@ -70,6 +70,24 @@ public class NativActivity extends SDLActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         immersive(true);
+        displayRefresh();
+    }
+
+    /* Refresh rate: the panel offers 120 Hz and 60 Hz (modes 1 and 2, both 1280x960). The Vita's frame loop runs at
+     * 60, so 60 Hz is the default -- on the 120 Hz panel every frame would be shown twice, and the panel would draw
+     * twice the power for no extra smoothness (this handheld gets warm). Opt in to 120 Hz by creating
+     * files/display_hz_120 (or RECOMP_DISPLAY_HZ=120): useful for the menus and for games whose loop can run faster. */
+    private void displayRefresh() {
+        Window w = getWindow();
+        if (w == null) return;
+        float hz = 60f;
+        String e = System.getenv("RECOMP_DISPLAY_HZ");
+        if (e != null && e.trim().equals("120")) hz = 120f;
+        else { File b = getExternalFilesDir(null); if (b == null) b = getFilesDir(); if (new File(b, "display_hz_120").exists()) hz = 120f; }
+        WindowManager.LayoutParams lp = w.getAttributes();
+        lp.preferredRefreshRate = hz;
+        w.setAttributes(lp);
+        Log.i(TAG, "display: preferred refresh " + hz + " Hz");
     }
 
     @Override
@@ -168,7 +186,17 @@ public class NativActivity extends SDLActivity {
         // a 4:3 screen (1280x960): use all of it rather than letterbox the Vita's 16:9 frame. The overlay's Display page
         // still offers fit/stretch/fill; a true 4:3 render is the port's camera work, not a window mode.
         android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
-        put("RECOMP_ASPECT_MODE", dm.heightPixels > 0 && (float) dm.widthPixels / dm.heightPixels < 1.6f ? "fill" : "fit");
+        boolean tall = dm.heightPixels > 0 && (float) dm.widthPixels / dm.heightPixels < 1.6f;
+        put("RECOMP_ASPECT_MODE", tall ? "fill" : "fit");
+
+        // 4:3 anamorphic (opt in with files/aspect_43 or RECOMP_ASPECT_43=1): the game renders its 3D with a 4/3
+        // projection into the 960x544 frame and the picture is shown 4/3 wide, so the whole panel is used with no
+        // crop and no stretch. It needs the port's camera patch (the RECOMP_ASPECT_43 checks in the generated code);
+        // without that patch this would only squeeze the picture, which is why it is not on by default yet.
+        if (tall && (System.getenv("RECOMP_ASPECT_43") != null || new File(ext, "aspect_43").exists())) {
+            put("RECOMP_ASPECT_43", "1");
+            put("RECOMP_HUD_DRAWS", "2d");
+        }
 
         if (HAS_SHADERS && copyAsset("shaders.txt", new File(getFilesDir(), "shaders.txt"))) {
             put("RECOMP_SHADER_RECIPES_SHIPPED", new File(getFilesDir(), "shaders.txt").getAbsolutePath());

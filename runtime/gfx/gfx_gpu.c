@@ -1348,6 +1348,16 @@ static void upload_texture(TexEntry *e, const GfxTexture *t) {
 	int wide = tex_wide(t->format); uint32_t bpp = wide ? 16 : 4;
 	batch_retire(e->tex, "texture re-upload");   /* its own command buffer runs before the pending draws that sampled the old content */
 	e->layout = (t->u_mode >> 4) & 3;
+	{	/* RECOMP_LOG_TEX=1: every distinct (format, size, cube) the game uploads, once -- to see what the
+		 * environment/IBL maps really are (a signed or float cube that took the UNORM path would wash out). */
+		static int lg = -1; if (lg < 0) lg = getenv("RECOMP_LOG_TEX") != 0;
+		if (lg) {
+			static struct { uint32_t f; uint32_t w, h; int cube, wide, lay; } seen[96]; static int ns;
+			int i = 0; while (i < ns && !(seen[i].f == t->format && seen[i].w == t->width && seen[i].h == t->height && seen[i].cube == cube)) i++;
+			if (i == ns && ns < 96) { seen[ns].f = t->format; seen[ns].w = t->width; seen[ns].h = t->height; seen[ns].cube = cube; seen[ns].wide = wide; seen[ns].lay = e->layout; ns++;
+				fprintf(stderr, "    texfmt: fmt %#010x %ux%u layout %d cube %d wide %d\n", t->format, t->width, t->height, e->layout, cube, wide); }
+		}
+	}
 	n_tex_uploads++;
 	SDL_GPUTextureFormat bc = tex_bc_format(t, cube);
 	if (bc != SDL_GPU_TEXTUREFORMAT_INVALID) {
