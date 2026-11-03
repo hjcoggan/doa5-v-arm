@@ -426,10 +426,11 @@ static void h_system_param_int(Cpu *c) {
 	WR32(A1, A0 == 1 || A0 == 2 ? 1 : 0); RET(0);
 }
 /* sceAppUtilAppParamGetInt(param, *value): the app's own parameters. Param 0 is SCE_APPUTIL_APPPARAM_ID_SKU_FLAG --
- * "is this the retail SKU or a demo/trial build" -- and DOA5+ reads it once at boot: with 0 it draws the "Demo
- * Version" banner over its title logo and restricts content; with 1 it runs as the retail game (Vita3K answers it
- * the same way: retail -> 1, demo -> 0). Real hardware takes it from the installed licence; here the app directory's
- * sce_sys/retail/livearea is the marker (a full package ships it, a trial does not). RECOMP_APP_PARAM overrides. */
+ * "is this the retail SKU or a demo/trial build" -- and DOA5+ reads it once at boot: with 0 or 1 it draws the "Demo
+ * Version" banner over its title logo and restricts content; **3 runs it as the retail game** (verified by trying
+ * each value: the banner disappears at 3). Real hardware takes it from the installed licence; here the app
+ * directory's sce_sys/retail/livearea is the marker (a full package ships it, a trial does not).
+ * RECOMP_APP_PARAM overrides. */
 static void h_app_param_int(Cpu *c) {
 	if (!A1) { RET(0x80100600u); return; }
 	const char *e = getenv("RECOMP_APP_PARAM");
@@ -438,7 +439,10 @@ static void h_app_param_int(Cpu *c) {
 	else if (A0 == 0) {
 		const char *fs = getenv("RECOMP_FS") ? getenv("RECOMP_FS") : "fs";
 		char p[512]; snprintf(p, sizeof p, "%s/app0/sce_sys/retail/livearea", fs);
-		struct stat st; v = stat(p, &st) == 0 ? 1u : 0u;
+		struct stat st; v = stat(p, &st) == 0 ? 1u : 0u;   /* 1: playable. 3 is the TRUE retail value (the "Demo Version"
+		                                                     * banner disappears) but retail mode then auto-saves at the
+		                                                     * first menu and the game sits on "SAVING..." forever -- see
+		                                                     * HANDOVER. RECOMP_APP_PARAM=3 selects it for that work. */
 	}
 	WR32(A1, v);
 	if (getenv("RECOMP_APP_PARAM_LOG")) { static int n; if (n++ < 8) fprintf(stderr, "    app param %u -> %u (caller lr %#x)\n", A0, v, c->r[14]); }
