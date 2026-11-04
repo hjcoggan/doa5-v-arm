@@ -566,7 +566,18 @@ void audio_output(int dev, const void *buf, uint32_t bytes) {
 	if (depth < 0) { depth = getenv("RECOMP_AUDIO_QUEUE") ? atoi(getenv("RECOMP_AUDIO_QUEUE")) : settings_int("audio_buffers", 1); if (depth < 1) depth = 1; if (depth > 4) depth = 4; }
 	if (SDL_GetAudioStreamQueued(s) > depth * (int)bytes + extra) {
 		int b = sched_block_begin();
-		while (SDL_GetAudioStreamQueued(s) > depth * (int)bytes + extra) SDL_Delay(1);
+		uint64_t t0 = SDL_GetTicks();
+		/* a device that stops draining (Android pauses a stream on focus loss, a screen-off or a route change) used to
+		 * hold this thread here forever: the game's mixer kept running but no buffer ever reached the port again, so the
+		 * sound stopped for good. Wait, then nudge the device, then give up on the queue rather than the guest. */
+		while (SDL_GetAudioStreamQueued(s) > depth * (int)bytes + extra) {
+			uint64_t waited = SDL_GetTicks() - t0;
+			if (waited > 250) {
+				if (waited < 400) { SDL_ResumeAudioStreamDevice(s); }
+				else { SDL_ClearAudioStream(s); static int said; if (!said++) fprintf(stderr, "    audio: the stream stopped draining; cleared its queue to keep the game running\n"); break; }
+			}
+			SDL_Delay(1);
+		}
 		if (b) sched_block_end();
 	}
 }

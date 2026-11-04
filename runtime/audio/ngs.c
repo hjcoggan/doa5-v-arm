@@ -800,12 +800,14 @@ static int fetch_at9(Voice *v, uint32_t pp, float rate, float *l, float *r) {
 			else {
 				uint32_t prev = v->buffer;
 				v->loops_done = 0; if (next < 0 || next > 3) {
-					static uint8_t said[512];
-					if (v < voices + 512 && !said[v - voices] && getenv("RECOMP_NGS_AT9_LOG")) {
-						said[v - voices] = 1;
-						fprintf(stderr, "    at9 v%d end: buffer %u bytes %u loops %d next %d | table:", VIDX(v), v->buffer, bytes, loops, next);
-						for (int k = 0; k < 4; k++) fprintf(stderr, " [%d d=%#x n=%u l=%d nx=%d]", k, RD32(pp + A_BUF(k)), RD32(pp + A_BUF(k) + 4), (int16_t)RD16(pp + A_BUF(k) + 8), (int16_t)RD16(pp + A_BUF(k) + 10));
-						fprintf(stderr, "\n");
+					if (v < voices + 512 && getenv("RECOMP_NGS_AT9_LOG")) {
+						static uint8_t said[512];
+						if (!said[v - voices]) {
+							said[v - voices] = 1;
+							fprintf(stderr, "    at9 v%d end: buffer %u bytes %u loops %d next %d | table:", VIDX(v), v->buffer, bytes, loops, next);
+							for (int k = 0; k < 4; k++) fprintf(stderr, " [%d d=%#x n=%u l=%d nx=%d]", k, RD32(pp + A_BUF(k)), RD32(pp + A_BUF(k) + 4), (int16_t)RD16(pp + A_BUF(k) + 8), (int16_t)RD16(pp + A_BUF(k) + 10));
+							fprintf(stderr, "\n");
+						}
 					}
 					return 0;
 				} v->buffer = next;
