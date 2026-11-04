@@ -320,6 +320,12 @@ static void h_def_scream(Cpu *c) { RET(defn(DEF_SCREAM)); }
 static void h_def_scream_at9(Cpu *c) { RET(defn(DEF_SCREAM_AT9)); }
 static void h_def_compressor(Cpu *c) { RET(defn(DEF_COMPRESSOR)); }
 static void h_def_sidechain(Cpu *c) { RET(defn(DEF_SIDECHAIN)); }
+/* the two DOA5+ asks for: a "simple" ATRAC9 player and an EQ bus. The definition objects are opaque to the game --
+ * it only hands them back in a rack description -- so they take the models this file already has: the ATRAC9
+ * player (the same buffer-and-params layout the Scream AT9 voice uses) and a pass-through bus. Without them a
+ * game that builds its voice from these definitions got 0 back, made no voices, and played silence. */
+static void h_def_simple_at9(Cpu *c) { RET(defn(DEF_SCREAM_AT9)); }
+static void h_def_eq(Cpu *c) { RET(defn(DEF_COMPRESSOR)); }
 
 /* ---- system and racks */
 static void h_sys_mem(Cpu *c) { WR32(A1, 0x10000); RET(0); }   /* (params, *size) */
@@ -793,7 +799,16 @@ static int fetch_at9(Voice *v, uint32_t pp, float rate, float *l, float *r) {
 			if (loops != 0 && (loops < 0 || v->loops_done < (uint32_t)loops)) { v->loops_done++; player_event(v, EV_LOOPED(v), v->loops_done, data); }
 			else {
 				uint32_t prev = v->buffer;
-				v->loops_done = 0; if (next < 0 || next > 3) return 0; v->buffer = next;
+				v->loops_done = 0; if (next < 0 || next > 3) {
+					static uint8_t said[512];
+					if (v < voices + 512 && !said[v - voices] && getenv("RECOMP_NGS_AT9_LOG")) {
+						said[v - voices] = 1;
+						fprintf(stderr, "    at9 v%d end: buffer %u bytes %u loops %d next %d | table:", VIDX(v), v->buffer, bytes, loops, next);
+						for (int k = 0; k < 4; k++) fprintf(stderr, " [%d d=%#x n=%u l=%d nx=%d]", k, RD32(pp + A_BUF(k)), RD32(pp + A_BUF(k) + 4), (int16_t)RD16(pp + A_BUF(k) + 8), (int16_t)RD16(pp + A_BUF(k) + 10));
+						fprintf(stderr, "\n");
+					}
+					return 0;
+				} v->buffer = next;
 				player_event(v, EV_SWAPPED, prev, RD32(pp + A_BUF(next)));
 				at9_log(v, pp, prev, "swap");
 			}
@@ -1226,6 +1241,7 @@ const HleEntry hle_ngs[] = {
 	{"sceNgsVoiceDefGetReverbBuss", h_def_reverb}, {"sceNgsVoiceDefGetScreamVoice", h_def_scream},
 	{"sceNgsVoiceDefGetScreamAtrac9Voice", h_def_scream_at9}, {"sceNgsVoiceDefGetCompressorBuss", h_def_compressor},
 	{"sceNgsVoiceDefGetCompressorSideChainBuss", h_def_sidechain},
+	{"sceNgsVoiceDefGetSimpleAtrac9Voice", h_def_simple_at9}, {"sceNgsVoiceDefGetEqBuss", h_def_eq},
 	{"sceNgsVoiceSetFinishedCallback", h_voice_finished_cb}, {"sceNgsVoiceSetModuleCallback", h_voice_module_cb},
 	{"sceNgsVoiceGetParamsOutOfRange", h_params_out_of_range}, {"sceNgsVoiceInit", h_ok}, {"sceNgsPatchGetInfo", h_patch_info},
 	{"sceNgsAT9GetSectionDetails", h_at9_section},
