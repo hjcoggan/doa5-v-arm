@@ -195,6 +195,11 @@ public class NativActivity extends SDLActivity {
         put("RECOMP_TITLE", TITLE_ID);
         put("RECOMP_GAME_NAME", GAME_NAME);
         put("RECOMP_METRICS", "1");
+        // the shader cache and the recorded recipes are resolved relative to the process's working directory, which on
+        // Android is "/" (there is no chdir): mkdir("shader_cache") fails there and the port silently falls back to
+        // translating every shader on the first draw -- including ignoring the recipes shipped with the port. An
+        // absolute path in the app's own storage fixes both.
+        put("RECOMP_SHADER_CACHE", new File(ext, "shader_cache").getAbsolutePath());
 
         // a 4:3 screen (1280x960): use all of it rather than letterbox the Vita's 16:9 frame. The overlay's Display page
         // still offers fit/stretch/fill; a true 4:3 render is the port's camera work, not a window mode.
