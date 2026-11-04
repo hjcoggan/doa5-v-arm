@@ -410,8 +410,22 @@ void savedlg_answer(int seq, int choice) {
 	pthread_mutex_unlock(&sd_mu);
 }
 
-/* ---- trophies: a context and a handle that accept everything */
+/* ---- trophies: a context and a handle that accept everything, and nothing is ever unlocked.
+ * sceNpTrophyGetTrophyUnlockState matters: with a stub that returns an error, a game that enables trophies
+ * (DOA5+ does, only when it runs as retail rather than a trial) starts a thread that polls the unlock state
+ * every frame and never proceeds -- the game sat on its "SAVING..." overlay forever. DOA5+ passes a 16-byte
+ * flag array with the count right after it, so the zero-fill is clipped to the room the caller gave. */
 static void h_trophy_create(Cpu *c) { if (A0) WR32(A0, 1); RET(0); }
+static void h_trophy_ok(Cpu *c) { RET(0); }
+static void h_trophy_unlock_state(Cpu *c) {   /* (context, handle, SceNpTrophyFlagArray *, uint32_t *count) */
+	if (A2) memset(G(A2), 0, (A3 && A3 >= A2 + 32) ? 32 : 16);
+	if (A3) WR32(A3, 0);
+	RET(0);
+}
+static void h_trophy_unlock(Cpu *c) {   /* (context, handle, trophy id, int32_t *platinum): -1 -- this one completes none */
+	if (A3) WR32(A3, 0xFFFFFFFFu);
+	RET(0);
+}
 
 /* system events (suspend/resume and the like): none ever arrives; the real call returns an error
  * when the queue is empty, which ends a game's drain loop */
@@ -439,10 +453,11 @@ static void h_app_param_int(Cpu *c) {
 	else if (A0 == 0) {
 		const char *fs = getenv("RECOMP_FS") ? getenv("RECOMP_FS") : "fs";
 		char p[512]; snprintf(p, sizeof p, "%s/app0/sce_sys/retail/livearea", fs);
-		struct stat st; v = stat(p, &st) == 0 ? 1u : 0u;   /* 1: playable. 3 is the TRUE retail value (the "Demo Version"
-		                                                     * banner disappears) but retail mode then auto-saves at the
-		                                                     * first menu and the game sits on "SAVING..." forever -- see
-		                                                     * HANDOVER. RECOMP_APP_PARAM=3 selects it for that work. */
+		struct stat st; v = stat(p, &st) == 0 ? 3u : 0u;   /* 3: the retail SKU flag. 0 and 1 leave DOA5+ showing its
+		                                                     * "Demo Version" banner and in trial mode: STORY is ignored and
+		                                                     * most of the roster is locked. Retail mode also enables trophies,
+		                                                     * which used to hang it on "SAVING..." until the trophy unlock-state
+		                                                     * HLE existed (h_trophy_unlock_state). RECOMP_APP_PARAM overrides. */
 	}
 	WR32(A1, v);
 	if (getenv("RECOMP_APP_PARAM_LOG")) { static int n; if (n++ < 8) fprintf(stderr, "    app param %u -> %u (caller lr %#x)\n", A0, v, c->r[14]); }
@@ -564,5 +579,8 @@ const HleEntry hle_apputil[] = {
 	{"sceAppUtilSaveDataDataRemove", h_save_data_remove},
 	{"sceNpTrophyCreateContext", h_trophy_create},
 	{"sceNpTrophyCreateHandle", h_trophy_create},
+	{"sceNpTrophyInit", h_trophy_ok}, {"sceNpTrophyTerm", h_trophy_ok},
+	{"sceNpTrophyDestroyContext", h_trophy_ok}, {"sceNpTrophyDestroyHandle", h_trophy_ok},
+	{"sceNpTrophyGetTrophyUnlockState", h_trophy_unlock_state}, {"sceNpTrophyUnlockTrophy", h_trophy_unlock},
 	{0, 0},
 };
