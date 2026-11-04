@@ -341,7 +341,9 @@ static void dec_vbw(uint64_t w, int sec, UOp *op) {
 	op->args[2] = (int32_t)BITS(w, 37, 36);     /* src2_exth */
 	op->mask = 0xF;
 	op->s0.bank = BK_NONE;
-	op->reps = 1; op->repmode = RM_EXTERNAL;
+	/* repeat count in 47:44, as VCOMP's: DOA5's IBL-cube shader 0x81ae82b0 clears its F16x4 accumulator r8:r9 with
+	 * one "VBW rpt2 r8 = SA22 | 0" -- run once, r9 kept the iterator's F32 bits and blue started at 85.25: blue IBL */
+	op->reps = (uint8_t)(BITS(w, 47, 44) + 1); op->repmode = RM_SLMSI;
 }
 
 /* ---- SOP2 / SOP2M / SOP3 (§3.11): U8 RGBA blend-style sum of products ---- */
@@ -820,7 +822,7 @@ static void get_mult(const UOp *op, int mult[4]) {
 	else if (op->op == OP_VMOV) { int f = (op->sub3 == 4 || op->sub3 == 5); mult[0] = mult[1] = mult[2] = mult[3] = f ? 2 : 1; }
 	else if (op->op == OP_VPCK) { int sf = (op->s1.type == TY_F16 || op->s1.type == TY_F32 || op->s1.type == TY_C10), df = (op->dst.type == TY_F16 || op->dst.type == TY_F32 || op->dst.type == TY_C10); /* repeats step each operand in its own register size: a float source's 6-bit field (and src2's, always) counts 64-bit registers -- two words a step -- the 7-bit destination 32-bit ones. Float-to-float packs used to step their sources one word: Uncharted's cutscene character lights pack three F32 colours with one VPCK repeated three times (SMLSI -4/-2), the 2nd and 3rd read the wrong words, an F32 1.9e9 became an F16 infinity and every lit character pixel went NaN (black) */
 		if (sf || df) { mult[0] = 1; mult[1] = mult[2] = 2; mult[3] = 1; } else { mult[0] = mult[1] = mult[2] = mult[3] = 1; } }
-	else if (op->op == OP_LDST || op->op == OP_VCOMP || op->op == OP_SOP2 || op->op == OP_SOP2M || op->op == OP_SOP3 ||
+	else if (op->op == OP_LDST || op->op == OP_VCOMP || op->op == OP_VBW || op->op == OP_SOP2 || op->op == OP_SOP2M || op->op == OP_SOP3 ||
 	         op->op == OP_I8MAD || op->op == OP_I16MAD || op->op == OP_I32MAD || op->op == OP_I32MAD2)
 		mult[0] = mult[1] = mult[2] = mult[3] = 1;
 }
@@ -1010,9 +1012,12 @@ static void exec_vtstmsk(Ctx *cx, const UOp *op) {
 }
 static uint32_t rol32(uint32_t v, int s) { s &= 31; return s ? (v << s) | (v >> (32 - s)) : v; }
 static void exec_vbw(Ctx *cx, const UOp *op) {
-	uint32_t a = read_i32(cx, &op->s1, 0, 0), b;
+	int mult[4]; get_mult(op, mult);
+	for (int r = 0; r < op->reps; r++) {
+	int off1 = slot_offset(cx, op->repmode, op->s1.bank, 1, r, mult), off2 = slot_offset(cx, op->repmode, op->s2.bank, 2, r, mult), offd = slot_offset(cx, op->repmode, op->dst.bank, 3, r, mult);
+	uint32_t a = read_i32(cx, &op->s1, off1, 0), b;
 	if (op->s2.bank == BK_IMM) b = (uint32_t)op->s2.num | ((uint32_t)op->imm << 7) | ((uint32_t)op->args[2] << 14);
-	else b = read_i32(cx, &op->s2, 0, 0);
+	else b = read_i32(cx, &op->s2, off2, 0);
 	int rot = op->args[0] & 31;
 	b = op->sub3 ? (uint32_t)(((b << (rot & 15)) | (b >> (16 - (rot & 15)))) & 0xFFFF) : rol32(b, rot);
 	if (op->args[1]) b = op->sub3 ? (~b & 0xFFFFu) : ~b;
@@ -1025,7 +1030,8 @@ static void exec_vbw(Ctx *cx, const UOp *op) {
 	default: result = a; break;
 	}
 	if (op->sub3) result &= 0xFFFFu;
-	write_raw_lane(cx, &op->dst, 0, 0, result);
+	write_raw_lane(cx, &op->dst, offd, 0, result);
+	}
 }
 static void u8_unpack(uint32_t w, float rgb[3], float *a) { rgb[0] = (w & 0xFF) / 255.0f; rgb[1] = ((w >> 8) & 0xFF) / 255.0f; rgb[2] = ((w >> 16) & 0xFF) / 255.0f; *a = ((w >> 24) & 0xFF) / 255.0f; }
 static float clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
