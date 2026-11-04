@@ -59,6 +59,8 @@ typedef struct Voice {
 	/* player state */
 	uint32_t buffer, byte_pos, samples_gen, bytes_consumed, loops_done;
 	uint32_t upd_active;                   /* system updates it has been active for since its play (SceNgsVoiceInfo.uUpdateCallsActive) */
+	uint32_t rack_buf, rack_bytes;         /* the buffer the game gave sceNgsRackInit: NGS mixes the rack's voices into it in place */
+	uint32_t rack_gen;
 	double frac;                           /* the read position past the resampler's centre, in source samples (rs_read) */
 	float rs_h[2][32]; int rs_i;           /* the last 16 source samples per channel, each stored twice (rs_push) */
 	int16_t *mix;                          /* a master bus's output granule (stereo) */
@@ -339,19 +341,20 @@ static void h_rack_mem(Cpu *c) { WR32(A2, 0x1000); RET(0); }   /* (system, descr
 static void h_rack_init(Cpu *c) {
 	uint32_t desc = A2, def = RD32(desc), n = RD32(desc + 4), kind = def ? RD32(def) : DEF_OTHER;
 	uint32_t rack = gobj(8 + 4 * n);
+	uint32_t rbuf = A1 ? RD32(A1) : 0, rbytes = A1 ? RD32(A1 + 4) : 0;   /* SceNgsBufferInfo {data, size} */
 	WR32(rack, n);
 	pthread_mutex_lock(&lock);
 	for (uint32_t i = 0; i < n && nvoices < 512; i++) {
 		Voice *v = &voices[nvoices++];
 		memset(v, 0, sizeof *v);
-		v->handle = gobj(16); v->def = kind; v->rack = rack;
+		v->handle = gobj(16); v->def = kind; v->rack = rack; v->rack_buf = rbuf; v->rack_bytes = rbytes;
 		for (int m = 0; m < MAX_MODULES; m++) v->params[m] = gobj(PARAMS_SIZE);
 		if (kind == DEF_MASTER) { v->mix = calloc(2 * 4096, 2); v->acc = calloc(2 * 4096, sizeof(float)); v->playing = 1; }
 		else if (kind == DEF_REVERB || PASS_BUS(kind)) { v->acc = calloc(2 * 4096, sizeof(float)); v->playing = 1; if (kind == DEF_REVERB && !v->rv) v->rv = calloc(1, sizeof *v->rv); }
 		WR32(rack + 8 + 4 * i, v->handle);
 	}
 	pthread_mutex_unlock(&lock);
-	fprintf(stderr, "    ngs: rack of %u voices, definition %u\n", n, kind);
+	fprintf(stderr, "    ngs: rack of %u voices, definition %u, output buffer %#x (%u bytes)\n", n, kind, rbuf, rbytes);
 	WR32(A3, rack); RET(0);
 }
 static void h_rack_voice(Cpu *c) { uint32_t n = RD32(A0); WR32(A2, A1 < n ? RD32(A0 + 8 + 4 * A1) : 0); RET(A1 < n ? 0 : 0x804a0005u); }
@@ -1014,6 +1017,23 @@ static void voice_stages(Voice *v, float *buf, uint32_t gn) {
 	}
 }
 
+/* a voice's output into its rack's buffer, in place (SceNgsBufferInfo: "buffer owned by the caller and used by NGS
+ * in place"): the rack IS the mixer the game reads. Only voices with no outgoing patch land here -- a patched one
+ * feeds its destination instead. Without this the game's own buffer stays silent however well the voices render. */
+static int voice_patched(uint32_t handle) {
+	for (int p = 0; p < npatches; p++) if (patches[p].active && patches[p].src == handle) return 1;
+	return 0;
+}
+static void rack_add(Voice *v, const float *buf, uint32_t gn) {
+	if (!v->rack_buf || v->rack_bytes < 4) return;
+	uint32_t n = 2u * gn; if (n * 2u > v->rack_bytes) n = v->rack_bytes / 2u;
+	int16_t *out = (int16_t *)G(v->rack_buf);
+	for (uint32_t k = 0; k < n; k++) {
+		float s = (float)out[k] + buf[k] * 32767.0f;
+		out[k] = (int16_t)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
+	}
+}
+
 /* a voice's (stereo) output through every active patch out of it, into the destinations' inputs */
 static void route(Voice *v, const float *out, uint32_t gn) {
 	for (int p = 0; p < npatches; p++) {
@@ -1066,6 +1086,14 @@ static void h_system_update(Cpu *c) {
 	static float tmp[2 * 4096];
 	uint32_t gn = granularity > 4096 ? 4096 : granularity;
 	for (int i = 0; i < nvoices; i++) if (voices[i].acc) memset(voices[i].acc, 0, sizeof(float) * 2 * gn);
+	/* every rack's own buffer starts empty: NGS mixes the rack's voices into it in place */
+	for (int i = 0; i < nvoices; i++) {
+		Voice *v = &voices[i];
+		if (!v->rack_buf || v->rack_gen == updates) continue;
+		uint32_t n = 2u * gn * 2u; if (n > v->rack_bytes) n = v->rack_bytes;
+		if (n) memset(G(v->rack_buf), 0, n);
+		for (int k = 0; k < nvoices; k++) if (voices[k].rack == v->rack) voices[k].rack_gen = updates;
+	}
 	for (int i = 0; i < nvoices; i++) if (voices[i].playing && !voices[i].paused) voices[i].upd_active++;   /* (h_voice_info) */
 	for (int i = 0; i < nvoices; i++) {
 		Voice *v = &voices[i];
@@ -1097,6 +1125,7 @@ static void h_system_update(Cpu *c) {
 			if (uf[i]) { uint32_t u = (uint32_t)updates; fwrite(&u, 4, 1, uf[i]); fflush(uf[i]); }
 		}
 		route(v, tmp, gn);
+		if (v->def != DEF_MASTER && !voice_patched(v->handle)) rack_add(v, tmp, gn);   /* unpatched: its rack's buffer */
 		if (!v->playing && v->def == DEF_SCREAM_AT9) at9_log(v, v->params[0], v->buffer, "stopped");
 		if (!v->playing) {   /* it ran out of data (or failed) during this granule: END_OF_DATA unless the decoder already said why */
 			int failed = 0; for (int k = had; k < ndue; k++) failed |= due[k].voice == v->handle && due[k].reason == EV_DECODE_ERROR && v->def == DEF_SCREAM_AT9;
@@ -1165,6 +1194,12 @@ static void h_system_update(Cpu *c) {
 			}
 		}
 	}
+	if (dump_dir) for (int i = 0; i < nvoices; i++) {   /* every bus's accumulator, to see where a mix stops flowing */
+		Voice *v = &voices[i];
+		if (!v->acc || (!PASS_BUS(v->def) && v->def != DEF_REVERB)) continue;
+		static Wav bw[512]; char path[1024]; snprintf(path, sizeof path, "%s/bus%d_def%u.wav", dump_dir, i, v->def);
+		wav_put(&bw[i], path, sample_rate, 2, 3, v->acc, 2 * gn * 4);
+	}
 	for (int i = 0; i < nvoices; i++) {
 		Voice *v = &voices[i];
 		if (!v->mix) continue;   /* master buses: the output granule */
@@ -1175,6 +1210,7 @@ static void h_system_update(Cpu *c) {
 			float s = v->acc[k] * 32767.0f;
 			v->mix[k] = (int16_t)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
 		}
+		if (!voice_patched(v->handle)) rack_add(v, v->acc, gn);
 	}
 	Due now[256]; int n = ndue;
 	memcpy(now, due, sizeof(Due) * (size_t)n); ndue = 0;
