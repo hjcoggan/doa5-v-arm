@@ -1965,12 +1965,35 @@ static SDL_GPUTexture *target_lo(TargetEntry *e) {   /* render scale > 1: the 1x
 	}
 	return e->lo;
 }
+static int target_raw_ok(const TargetEntry *e, const GfxTarget *t);
 static void target_upload_from_guest(TargetEntry *e) {
 	if (e == scene_entry || batch_uses(e->color)) batch_flush("target upload");   /* the upload's own command buffer would otherwise run before the pending draws (or view passes) it must follow */
 	if (trace_sync()) fprintf(stderr, "gpu trace: upload target %#x from guest (after %u gpu + %u software draws)\n", e->addr, n_gpu_draws, n_fallback);
 	uint32_t npx = e->width * e->height, n = kind_bytes(e->kind) * npx;
-	float *f = malloc(16u * npx); uint8_t *raw = malloc(n);
 	GfxTarget t = target_entry_as_gfx(e);
+	SDL_GPUTexture *upd = TSCALED(e) && target_lo(e) ? e->lo : e->color;
+	if (target_raw_ok(e, &t)) {   /* the guest bytes are already this texture's RGBA8 texels: no float round trip */
+		SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = n };
+		SDL_GPUTransferBuffer *xb = SDL_CreateGPUTransferBuffer(gpu(), &xci);
+		if (xb) {
+			void *map = SDL_MapGPUTransferBuffer(gpu(), xb, true); memcpy(map, G(e->addr), n); SDL_UnmapGPUTransferBuffer(gpu(), xb);
+			SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+			SDL_GPUTextureTransferInfo src = { .transfer_buffer = xb, .pixels_per_row = e->width, .rows_per_layer = e->height };
+			SDL_GPUTextureRegion dst = { .texture = upd, .w = e->width, .h = e->height, .d = 1 };
+			SDL_UploadToGPUTexture(cp, &src, &dst, true);
+			SDL_EndGPUCopyPass(cp);
+			if (upd != e->color) {
+				SDL_GPUBlitInfo bl = { .source = { .texture = upd, .w = e->width, .h = e->height }, .destination = { .texture = e->color, .w = TSX(e, e->width), .h = TSY(e, e->height) }, .load_op = SDL_GPU_LOADOP_DONT_CARE, .filter = SDL_GPU_FILTER_NEAREST };
+				SDL_BlitGPUTexture(cmd, &bl);
+			}
+			SDL_SubmitGPUCommandBuffer(cmd);
+			SDL_ReleaseGPUTransferBuffer(gpu(), xb);
+			static int said; if (!said++) fprintf(stderr, "gpu: target upload: raw RGBA8 path %#x %ux%u (kind %d)\n", e->addr, e->width, e->height, e->kind);
+			e->cpu_dirty = 0; e->gen = ++write_clock;
+			return;
+		}
+	}
+	float *f = malloc(16u * npx); uint8_t *raw = malloc(n);
 	gfx_decode_target_f32(&t, f);   /* the game's own declared colour format (565, F16, F32F32, ...), decoded as gfx_soft.c reads it */
 	if (trace_sync() && npx > 10 * e->width + 10) fprintf(stderr, "gpu trace:   upload (10,10) = %g %g %g, guest word %#x\n", f[4 * (10 * e->width + 10)], f[4 * (10 * e->width + 10) + 1], f[4 * (10 * e->width + 10) + 2], RD32(e->addr + 4 * (10 * e->width + 10)));
 	floats_to_texels(e->kind, f, raw, npx);
