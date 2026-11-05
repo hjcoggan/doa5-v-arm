@@ -40,6 +40,11 @@ typedef struct {
 	uint32_t type;
 	void *at9;
 	int at9_frame_samples;
+	/* ATRAC9 superframe accounting: LibAtrac9 reports the frame sizes it parsed, and they can add up one byte short of
+	 * the superframe (a padding byte the parser does not count). A game that advances by the reported sizes then asks
+	 * for one more frame from a one-byte tail; the console's decoder never leaves that remainder, so the last frame of
+	 * each superframe reports the bytes left to its boundary instead. */
+	uint32_t at9_super, at9_frames, at9_acc, at9_n, at9_last_end;
 #ifdef RECOMP_AVCODEC
 	AVCodecContext *ctx;
 	AVFrame *frm;
@@ -165,6 +170,9 @@ static void h_create(Cpu *c) {
 		Atrac9CodecInfo ci;
 		memset(&ci, 0, sizeof ci);
 		Atrac9GetCodecInfo(d->at9, &ci);
+		d->at9_super = (uint32_t)ci.superframeSize; d->at9_frames = (uint32_t)ci.framesInSuperframe;
+		if (ad_log()) fprintf(stderr, "audiodec: at9 create cfg %02x%02x%02x%02x ch %d rate %d frameSamples %d super %d framesInSuper %d\n",
+		                      cfg[0], cfg[1], cfg[2], cfg[3], ci.channels, ci.samplingRate, ci.frameSamples, ci.superframeSize, ci.framesInSuperframe);
 		d->channels = ci.channels; d->sample_rate = ci.samplingRate; d->at9_frame_samples = ci.frameSamples;
 		WR32(info + 8, (uint32_t)ci.channels);
 		WR32(info + 12, 0);                         /* bit rate: not reported by LibAtrac9 */
@@ -300,9 +308,23 @@ static uint32_t decode_one(uint32_t ctrl) {
 	if (d->type == TYPE_AT9) {
 		if (!d->at9) return ERR_INVALID_HANDLE;
 		int used = 0;
+		if (ad_log()) fprintf(stderr, "audiodec: at9 es %#x used %u max %u pcm %#x cap %u first %02x%02x%02x%02x%02x%02x%02x%02x\n",
+		                      es, C_ES_USED(ctrl), esmax, pcm, pcmmax, RD8(es), RD8(es+1), RD8(es+2), RD8(es+3), RD8(es+4), RD8(es+5), RD8(es+6), RD8(es+7));
 		int r = Atrac9Decode(d->at9, G(es), (short *)G(pcm), &used);
+		if (ad_log()) fprintf(stderr, "audiodec: at9 decode -> r %d used %d\n", r, used);
 		if (r < 0) return ERR_API_FAIL;
-		WR32(ctrl + 12, (uint32_t)used);
+		uint32_t report = (uint32_t)used;
+		if (d->at9_super && d->at9_frames > 1 && used > 0) {
+			if (!d->at9_n || es != d->at9_last_end) { d->at9_n = 0; d->at9_acc = 0; }   /* a new superframe */
+			d->at9_n++;
+			if (d->at9_n >= d->at9_frames) {   /* the last frame: report the bytes left to the superframe boundary */
+				if (d->at9_acc < d->at9_super && d->at9_super - d->at9_acc >= report) report = d->at9_super - d->at9_acc;
+				d->at9_n = 0; d->at9_acc = 0;
+			} else d->at9_acc += report;
+			d->at9_last_end = es + report;
+		}
+		if (ad_log()) fprintf(stderr, "audiodec: at9 report %u (acc %u/%u n %u)\n", report, d->at9_acc, d->at9_super, d->at9_n);
+		WR32(ctrl + 12, report);
 		uint32_t bytes = (uint32_t)(d->at9_frame_samples * d->channels * 2);
 		if (bytes > pcmmax) bytes = pcmmax;
 		WR32(ctrl + 24, bytes);
