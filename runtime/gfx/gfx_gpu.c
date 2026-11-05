@@ -1979,63 +1979,53 @@ static uint8_t *scratch_raw(uint32_t n) {
 	return g_scratch_raw;
 }
 static void target_upload_from_guest(TargetEntry *e) {
-	if (e == scene_entry || batch_uses(e->color)) batch_flush("target upload");   /* the upload's own command buffer would otherwise run before the pending draws (or view passes) it must follow */
+	if (e == scene_entry || batch_uses(e->color)) batch_flush("target upload");   /* the upload's own command buffer would otherwise run before the pending draws */
 	if (trace_sync()) fprintf(stderr, "gpu trace: upload target %#x from guest (after %u gpu + %u software draws)\n", e->addr, n_gpu_draws, n_fallback);
 	uint32_t npx = e->width * e->height, n = kind_bytes(e->kind) * npx;
 	GfxTarget t = target_entry_as_gfx(e);
 	SDL_GPUTexture *upd = TSCALED(e) && target_lo(e) ? e->lo : e->color;
-	if (target_raw_ok(e, &t)) {   /* the guest bytes are already this texture's RGBA8 texels: no float round trip */
-		SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = n };
-		SDL_GPUTransferBuffer *xb = SDL_CreateGPUTransferBuffer(gpu(), &xci);
-		if (xb) {
-			void *map = SDL_MapGPUTransferBuffer(gpu(), xb, true); memcpy(map, G(e->addr), n); SDL_UnmapGPUTransferBuffer(gpu(), xb);
-			SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
-			SDL_GPUTextureTransferInfo src = { .transfer_buffer = xb, .pixels_per_row = e->width, .rows_per_layer = e->height };
-			SDL_GPUTextureRegion dst = { .texture = upd, .w = e->width, .h = e->height, .d = 1 };
-			SDL_UploadToGPUTexture(cp, &src, &dst, true);
-			SDL_EndGPUCopyPass(cp);
-			if (upd != e->color) {
-				SDL_GPUBlitInfo bl = { .source = { .texture = upd, .w = e->width, .h = e->height }, .destination = { .texture = e->color, .w = TSX(e, e->width), .h = TSY(e, e->height) }, .load_op = SDL_GPU_LOADOP_DONT_CARE, .filter = SDL_GPU_FILTER_NEAREST };
-				SDL_BlitGPUTexture(cmd, &bl);
-			}
-			SDL_SubmitGPUCommandBuffer(cmd);
-			SDL_ReleaseGPUTransferBuffer(gpu(), xb);
-			static int said; if (!said++) fprintf(stderr, "gpu: target upload: raw RGBA8 path %#x %ux%u (kind %d)\n", e->addr, e->width, e->height, e->kind);
-			e->cpu_dirty = 0; e->gen = ++write_clock;
-			return;
-		}
+	/* through the staging ring, as the texture uploads are: a fresh transfer buffer per scene (create, map, copy,
+	 * release) was most of the target sync's 2-3 ms a scene */
+	uint32_t base; uint8_t *map = tring_begin(n, &base);
+	if (!map) return;
+	if (target_raw_ok(e, &t)) memcpy(map, G(e->addr), n);   /* the guest bytes are already this texture's RGBA8 texels */
+	else {
+		float *f = scratch_floats(npx); if (!f) return;
+		gfx_decode_target_f32(&t, f);   /* the game's own declared colour format (565, F16, F32F32, ...), decoded as gfx_soft.c reads it */
+		if (trace_sync() && npx > 10 * e->width + 10) fprintf(stderr, "gpu trace:   upload (10,10) = %g %g %g, guest word %#x\n", f[4 * (10 * e->width + 10)], f[4 * (10 * e->width + 10) + 1], f[4 * (10 * e->width + 10) + 2], RD32(e->addr + 4 * (10 * e->width + 10)));
+		floats_to_texels(e->kind, f, map, npx);
 	}
-	float *f = scratch_floats(npx); uint8_t *raw = scratch_raw(n);
-	if (!f || !raw) return;   /* (the scratch stays owned by scratch_floats/scratch_raw) */
-	gfx_decode_target_f32(&t, f);   /* the game's own declared colour format (565, F16, F32F32, ...), decoded as gfx_soft.c reads it */
-	if (trace_sync() && npx > 10 * e->width + 10) fprintf(stderr, "gpu trace:   upload (10,10) = %g %g %g, guest word %#x\n", f[4 * (10 * e->width + 10)], f[4 * (10 * e->width + 10) + 1], f[4 * (10 * e->width + 10) + 2], RD32(e->addr + 4 * (10 * e->width + 10)));
-	floats_to_texels(e->kind, f, raw, npx);
-	SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = n };
-	SDL_GPUTransferBuffer *xb = SDL_CreateGPUTransferBuffer(gpu(), &xci);
-	void *map = SDL_MapGPUTransferBuffer(gpu(), xb, true); memcpy(map, raw, n); SDL_UnmapGPUTransferBuffer(gpu(), xb);
-	SDL_GPUTexture *up = TSCALED(e) && target_lo(e) ? e->lo : e->color;   /* scaled: the 1x copy, then each pixel replicated up */
 	SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
-	SDL_GPUTextureTransferInfo src = { .transfer_buffer = xb, .pixels_per_row = e->width, .rows_per_layer = e->height };
-	SDL_GPUTextureRegion dst = { .texture = up, .w = e->width, .h = e->height, .d = 1 };
+	SDL_GPUTextureTransferInfo src = { .transfer_buffer = tring_map_buffer(), .offset = base, .pixels_per_row = e->width, .rows_per_layer = e->height };
+	SDL_GPUTextureRegion dst = { .texture = upd, .w = e->width, .h = e->height, .d = 1 };
 	SDL_UploadToGPUTexture(cp, &src, &dst, true);
 	SDL_EndGPUCopyPass(cp);
-	if (up != e->color) {
-		SDL_GPUBlitInfo bl = { .source = { .texture = up, .w = e->width, .h = e->height }, .destination = { .texture = e->color, .w = TSX(e, e->width), .h = TSY(e, e->height) }, .load_op = SDL_GPU_LOADOP_DONT_CARE, .filter = SDL_GPU_FILTER_NEAREST };
+	if (upd != e->color) {
+		SDL_GPUBlitInfo bl = { .source = { .texture = upd, .w = e->width, .h = e->height }, .destination = { .texture = e->color, .w = TSX(e, e->width), .h = TSY(e, e->height) }, .load_op = SDL_GPU_LOADOP_DONT_CARE, .filter = SDL_GPU_FILTER_NEAREST };
 		SDL_BlitGPUTexture(cmd, &bl);
 	}
-	SDL_SubmitGPUCommandBuffer(cmd);
-	SDL_ReleaseGPUTransferBuffer(gpu(), xb);
+	tring_end(cmd, base, base + n);
 	e->cpu_dirty = 0; e->gen = ++write_clock;
 }
 /* the GPU colour texture -> RGBA floats in a caller-owned buffer (not guest memory: RECOMP_GFX_CHECK
  * compares it against the software path without the two stepping on each other) */
 static void target_download_texels(TargetEntry *e, float *out, uint8_t *raw);
 static void target_download_floats(TargetEntry *e, float *out) { target_download_texels(e, out, 0); }
+/* one download transfer buffer, grown on demand: the readback waits for its fence before mapping, so the buffer is
+ * idle between downloads -- creating and releasing one each time was part of the per-scene sync cost */
+static SDL_GPUTransferBuffer *g_dl_xb; static uint32_t g_dl_xb_n;
+static SDL_GPUTransferBuffer *dl_buffer(uint32_t n) {
+	if (g_dl_xb_n < n) {
+		if (g_dl_xb) SDL_ReleaseGPUTransferBuffer(gpu(), g_dl_xb);
+		SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, .size = n };
+		g_dl_xb = SDL_CreateGPUTransferBuffer(gpu(), &xci); g_dl_xb_n = g_dl_xb ? n : 0;
+	}
+	return g_dl_xb;
+}
 static void target_download_texels(TargetEntry *e, float *out, uint8_t *raw) {   /* raw: the texture's bytes as they are (kind_bytes a texel) instead of floats */
 	if (e == scene_entry) batch_flush("target download");   /* the pending draws are what is being read */
 	uint32_t npx = e->width * e->height, n = kind_bytes(e->kind) * npx;
-	SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, .size = n };
-	SDL_GPUTransferBuffer *xb = SDL_CreateGPUTransferBuffer(gpu(), &xci);
+	SDL_GPUTransferBuffer *xb = dl_buffer(n); if (!xb) return;
 	SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu());
 	SDL_GPUTexture *down = e->color;
 	if (TSCALED(e) && target_lo(e)) {   /* scaled: one sample of each pixel's n x n block, into the 1x copy (nearest: the guest's bytes are a sample, not a blend -- a packed G-buffer averaged is garbage) */
@@ -2052,7 +2042,6 @@ static void target_download_texels(TargetEntry *e, float *out, uint8_t *raw) {  
 	const uint8_t *map = SDL_MapGPUTransferBuffer(gpu(), xb, false);
 	if (raw) memcpy(raw, map, n); else texels_to_floats(e->kind, map, out, npx);
 	SDL_UnmapGPUTransferBuffer(gpu(), xb);
-	SDL_ReleaseGPUTransferBuffer(gpu(), xb);
 }
 /* an 8-bit target whose guest format is the GPU texture's own byte layout (gfx_target_plain_rgba8): guest memory takes the
  * downloaded bytes as they are -- the float round trip (decode, then encode texel by texel) cost ~3 ms a 960x544 present */
