@@ -1966,6 +1966,18 @@ static SDL_GPUTexture *target_lo(TargetEntry *e) {   /* render scale > 1: the 1x
 	return e->lo;
 }
 static int target_raw_ok(const TargetEntry *e, const GfxTarget *t);
+/* The float/raw scratch the target uploads and downloads convert through: 8 MB of malloc/free per scene was page-fault
+ * churn on the handheld (the same buffers every time). One grown-on-demand pair, used under the renderer's lock. */
+static float *g_scratch_f; static uint32_t g_scratch_f_n;
+static uint8_t *g_scratch_raw; static uint32_t g_scratch_raw_n;
+static float *scratch_floats(uint32_t n) {
+	if (g_scratch_f_n < n) { free(g_scratch_f); g_scratch_f = malloc(16u * (size_t)n); g_scratch_f_n = g_scratch_f ? n : 0; }
+	return g_scratch_f;
+}
+static uint8_t *scratch_raw(uint32_t n) {
+	if (g_scratch_raw_n < n) { free(g_scratch_raw); g_scratch_raw = malloc(n); g_scratch_raw_n = g_scratch_raw ? n : 0; }
+	return g_scratch_raw;
+}
 static void target_upload_from_guest(TargetEntry *e) {
 	if (e == scene_entry || batch_uses(e->color)) batch_flush("target upload");   /* the upload's own command buffer would otherwise run before the pending draws (or view passes) it must follow */
 	if (trace_sync()) fprintf(stderr, "gpu trace: upload target %#x from guest (after %u gpu + %u software draws)\n", e->addr, n_gpu_draws, n_fallback);
@@ -1993,14 +2005,14 @@ static void target_upload_from_guest(TargetEntry *e) {
 			return;
 		}
 	}
-	float *f = malloc(16u * npx); uint8_t *raw = malloc(n);
+	float *f = scratch_floats(npx); uint8_t *raw = scratch_raw(n);
+	if (!f || !raw) return;   /* (the scratch stays owned by scratch_floats/scratch_raw) */
 	gfx_decode_target_f32(&t, f);   /* the game's own declared colour format (565, F16, F32F32, ...), decoded as gfx_soft.c reads it */
 	if (trace_sync() && npx > 10 * e->width + 10) fprintf(stderr, "gpu trace:   upload (10,10) = %g %g %g, guest word %#x\n", f[4 * (10 * e->width + 10)], f[4 * (10 * e->width + 10) + 1], f[4 * (10 * e->width + 10) + 2], RD32(e->addr + 4 * (10 * e->width + 10)));
 	floats_to_texels(e->kind, f, raw, npx);
 	SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = n };
 	SDL_GPUTransferBuffer *xb = SDL_CreateGPUTransferBuffer(gpu(), &xci);
 	void *map = SDL_MapGPUTransferBuffer(gpu(), xb, true); memcpy(map, raw, n); SDL_UnmapGPUTransferBuffer(gpu(), xb);
-	free(f); free(raw);
 	SDL_GPUTexture *up = TSCALED(e) && target_lo(e) ? e->lo : e->color;   /* scaled: the 1x copy, then each pixel replicated up */
 	SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
 	SDL_GPUTextureTransferInfo src = { .transfer_buffer = xb, .pixels_per_row = e->width, .rows_per_layer = e->height };
@@ -2047,8 +2059,8 @@ static void target_download_texels(TargetEntry *e, float *out, uint8_t *raw) {  
 static int target_raw_ok(const TargetEntry *e, const GfxTarget *t) { return (e->kind == TK_U8 || e->kind == TK_U8S) && t->stride == e->width && gfx_target_plain_rgba8(t); }
 static void target_download_to_buffer(TargetEntry *e, uint8_t *out) {   /* as RGBA8, for RECOMP_GFX_CHECK's comparison */
 	uint32_t npx = e->width * e->height;
-	float *f = malloc(16u * npx); target_download_floats(e, f);
-	floats_to_texels(TK_U8, f, out, npx); free(f);
+	float *f = scratch_floats(npx); if (!f) return; target_download_floats(e, f);
+	floats_to_texels(TK_U8, f, out, npx);
 }
 static void textures_invalidate(uint32_t lo, uint32_t hi);
 /* the GPU colour texture -> guest memory, in the game's declared format, exactly as gfx_soft.c's
@@ -2069,7 +2081,7 @@ static void target_download_to_guest(TargetEntry *e) {
 		if (hitch_log() && us_now() - tdl0 > 1000) fprintf(stderr, "    gpu hitch: target %#x %ux%u downloaded to guest memory %s in %.2f ms\n", e->addr, e->width, e->height, sync_why, (us_now() - tdl0) / 1e3);
 		return;
 	}
-	float *f = malloc(16u * npx); target_download_floats(e, f);
+	float *f = scratch_floats(npx); if (!f) return; target_download_floats(e, f);
 	{	/* RECOMP_GPU_TRACE_ADDR=hexaddr: every download that writes that guest address (which target, why) -- what found a
 		 * stale float target clobbering Killzone's glass strip (2026-10-17) */
 		static uint32_t ta = 1; if (ta == 1) { const char *v = getenv("RECOMP_GPU_TRACE_ADDR"); ta = v ? (uint32_t)strtoul(v, 0, 16) : 0; }
@@ -2082,7 +2094,6 @@ static void target_download_to_guest(TargetEntry *e) {
 	{ static uint32_t ta = 1, last = 0xdeadbeef; if (ta == 1) { const char *v = getenv("RECOMP_GPU_TRACE_ADDR"); ta = v ? (uint32_t)strtoul(v, 0, 16) : 0; }
 	  if (ta && ta >= e->addr && ta < e->addr + gbytes && RD32(ta) != last) { last = RD32(ta); fprintf(stderr, "gpu trace addr: frame %llu: %#x now holds %#x\n", (unsigned long long)gpu_frame_no, ta, last); } }
 	if (trace_sync() && npx > 10 * e->width + 10) fprintf(stderr, "gpu trace:   download (10,10) = %g %g %g -> guest word %#x\n", f[4 * (10 * e->width + 10)], f[4 * (10 * e->width + 10) + 1], f[4 * (10 * e->width + 10) + 2], RD32(e->addr + 4 * (10 * e->width + 10)));
-	free(f);
 	e->gpu_dirty = 0;
 	textures_invalidate(e->addr, e->addr + gbytes);
 	t_tgt_download += us_now() - tdl0;

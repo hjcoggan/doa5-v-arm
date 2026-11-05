@@ -1343,6 +1343,15 @@ void window_run(void *(*fn)(void *), void *arg) {
 
 
 		if (!gpu) { SDL_Delay(1); continue; }
+		/* Nothing new from the game and no overlay to animate: presenting again would blit and composite the same
+		 * picture -- at 120 Hz, twice for every 60 fps frame (the panel is the big cost there, this is the GPU's).
+		 * The display keeps the last frame; wait for the next game frame (input and the overlay are polled above). */
+		static int dup_ok = -1; if (dup_ok < 0) dup_ok = getenv("RECOMP_PRESENT_DUPLICATES") != 0;   /* (1: present every refresh, as before) */
+		if (!dup_ok && !overlay_game_paused() && metrics_osd_level() == 0 &&
+		    !__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE)) {
+			SDL_Delay(1);
+			continue;
+		}
 		if (overlay_game_paused()) { extern void gfx_shader_prep_tick(void); gfx_shader_prep_tick(); }   /* (a paused game doesn't present: the shader warm-up steps on from here, its prep card's too) */
 		if (self_paced) {   /* no vsync wait paces this loop: a present once the game has a new frame, else once a refresh (menus, the overlay); spinning presented ~1200 times a second and slowed the game */
 			const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
