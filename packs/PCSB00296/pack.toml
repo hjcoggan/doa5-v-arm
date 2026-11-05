@@ -1,4 +1,4 @@
-# Dead or Alive 5 Plus (PCSB00296, EU release, 1.00) -- bring-up pack, not verified.
+# Dead or Alive 5 Plus (PCSB00296, EU release, 1.00) -- plays: arcade, versus, story and its movies, sound and saves.
 # Only facts about the game; nothing of its code or data (the format: pipeline/packconf.py).
 NAME = "Dead or Alive 5 Plus"
 REGION = "EU"
