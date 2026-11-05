@@ -357,6 +357,26 @@ static void h_rack_init(Cpu *c) {
 	fprintf(stderr, "    ngs: rack of %u voices, definition %u, output buffer %#x (%u bytes)\n", n, kind, rbuf, rbytes);
 	WR32(A3, rack); RET(0);
 }
+/* (rack): the game is done with the rack -- its voices leave the chain, and with them whatever they last did to the
+ * mix. A released effect bus (DOA5+'s EqBuss is one) used to stay: its voices kept their last parameter block, so an
+ * equalizer set to a low-pass for a scene kept filtering everything after the game had finished with it, and its
+ * patches kept feeding it. Nothing is freed (a stale handle still resolves, to a silent voice) */
+static void h_rack_release(Cpu *c) {
+	uint32_t rack = A0; int n = 0;
+	pthread_mutex_lock(&lock);
+	for (int i = 0; i < nvoices; i++) {
+		Voice *v = &voices[i];
+		if (!rack || v->rack != rack) continue;
+		v->playing = 0; v->paused = 0; v->releasing = 0; v->released_out = 0;
+		for (int m = 0; m < MAX_MODULES; m++) { v->params[m] = 0; v->bypass[m] = 0; }
+		for (int p = 0; p < npatches; p++) if (patches[p].active && (patches[p].src == v->handle || patches[p].dst == v->handle)) patches[p].active = 0;
+		v->rack = 0;
+		n++;
+	}
+	pthread_mutex_unlock(&lock);
+	fprintf(stderr, "    ngs: rack %#x released (%d voices)\n", rack, n);
+	RET(0);
+}
 static void h_rack_voice(Cpu *c) { uint32_t n = RD32(A0); WR32(A2, A1 < n ? RD32(A0 + 8 + 4 * A1) : 0); RET(A1 < n ? 0 : 0x804a0005u); }
 
 /* ---- patches: (SceNgsPatchSetupInfo*: source voice, output index, sub index, destination, input index, *patch) */
@@ -1163,7 +1183,9 @@ static void h_system_update(Cpu *c) {
 			for (int a = 0; a < nb && !wait; a++) wait = feeds[a][b] && !done[a];
 			if (wait && !cycle) continue;
 			Voice *v = &voices[bus[b]];
-			if (PASS_BUS(v->def)) route(v, v->acc, gn);
+			/* a bus's own modules run on what reached it, as a player's do: the EqBuss DOA5+ asks for is a pass bus
+			 * whose equalizer is the effect (its bands were never applied -- voice_stages only ran on players) */
+			if (PASS_BUS(v->def)) { voice_stages(v, v->acc, gn); route(v, v->acc, gn); }
 			else if (v->rv && reverb_bypassed(v)) { memset(v->rv, 0, sizeof *v->rv); route(v, v->acc, gn); }   /* (its tail cleared: nothing stale when the game turns it back on) */
 			else if (v->rv) {
 				if (dump_dir) { char path[1024]; snprintf(path, sizeof path, "%s/rv%d_in_pass0.wav", dump_dir, bus[b]); static Wav rin[512]; wav_put(&rin[bus[b]], path, sample_rate, 2, 3, v->acc, 2 * gn * 4); }
@@ -1285,7 +1307,7 @@ const HleEntry hle_ngs[] = {
 	{"sceNgsAT9GetSectionDetails", h_at9_section},
 	{"sceNgsSystemGetRequiredMemorySize", h_sys_mem}, {"sceNgsSystemInit", h_sys_init}, {"sceNgsSystemSetFlags", h_ok},
 	{"sceNgsSystemRelease", h_ok}, {"sceNgsSystemUpdate", h_system_update},
-	{"sceNgsRackGetRequiredMemorySize", h_rack_mem}, {"sceNgsRackInit", h_rack_init}, {"sceNgsRackRelease", h_ok},
+	{"sceNgsRackGetRequiredMemorySize", h_rack_mem}, {"sceNgsRackInit", h_rack_init}, {"sceNgsRackRelease", h_rack_release},
 	{"sceNgsRackGetVoiceHandle", h_rack_voice},
 	{"sceNgsPatchCreateRouting", h_patch_create}, {"sceNgsPatchRemoveRouting", h_patch_remove},
 	{"sceNgsVoicePatchSetVolumesMatrix", h_patch_volumes},
