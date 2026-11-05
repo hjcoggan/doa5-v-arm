@@ -1043,6 +1043,39 @@ void gfx_decode_texture_rgba8(const GfxTexture *t, uint8_t *out) {
 		}
 		free(img);
 	}
+	if (!fast && (base == 0x90000000u || base == 0x91000000u) && ((t->format >> 12) & 7) >= 2) {
+		/* YUV420, full range (CSC1): each chroma pair covers a 2x2 block. The generic path calls
+		 * yuv_texel per texel -- 13-20 ms for a 960x544 video frame on the render thread (DOA5+'s
+		 * story cutscenes upload three of them a frame); convert each pair once and write both texels
+		 * with integer BT.601 instead. Video-range swizzles (< 2) keep the generic path. */
+		uint32_t sw2 = (t->format >> 12) & 7, st = (uint32_t)tex_stride(t);
+		const uint8_t *Yp = G(t->data), *Cp = G(t->data + (size_t)st * h);
+		int ufirst = (int)(sw2 & 1);                       /* the YVU swizzles read Cb first */
+		uint32_t cst = base == 0x91000000u ? st / 2 : st;
+		uint32_t plane = base == 0x91000000u ? cst * ((h + 1) / 2) : 0;
+		for (uint32_t y = 0; y < h; y++) {
+			const uint8_t *yr = Yp + (size_t)y * st, *cr = Cp + (size_t)(y / 2) * cst;
+			for (uint32_t x = 0; x < w; x += 2) {
+				uint32_t cx = x >> 1;
+				int a, b;
+				if (base == 0x91000000u) { a = cr[cx]; b = cr[plane + cx]; }
+				else { a = cr[cx * 2]; b = cr[cx * 2 + 1]; }
+				int u = ufirst ? a : b, v = ufirst ? b : a;
+				int du = u - 128, dv = v - 128;
+				int r0 = (359 * dv + 128) >> 8, g0 = (-(88 * du + 183 * dv) + 128) >> 8, b0 = (454 * du + 128) >> 8;
+				uint8_t *o = out + 4 * ((size_t)y * w + x);
+				for (uint32_t k = 0; k < 2 && x + k < w; k++) {
+					int yy = yr[x + k];
+					int r = yy + r0, g = yy + g0, bl = yy + b0;
+					o[4 * k + 0] = (uint8_t)(r < 0 ? 0 : r > 255 ? 255 : r);
+					o[4 * k + 1] = (uint8_t)(g < 0 ? 0 : g > 255 ? 255 : g);
+					o[4 * k + 2] = (uint8_t)(bl < 0 ? 0 : bl > 255 ? 255 : bl);
+					o[4 * k + 3] = 255;
+				}
+			}
+		}
+		fast = 1;
+	}
 	if (!fast) { decode_rgba8_generic(t, out); return; }
 	static int check = -1; if (check < 0) check = getenv("RECOMP_GPU_DECODE_CHECK") != 0;
 	if (check) {

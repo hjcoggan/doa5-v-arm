@@ -2531,7 +2531,7 @@ static TargetEntry *scratch_target(const GfxTarget *t) {
 static uint32_t target_bytes(const TargetEntry *e) { GfxTarget t = target_entry_as_gfx(e); return (uint32_t)gfx_target_bpp(&t) * e->width * e->height; }
 static int target_bpp_entry(const TargetEntry *e) { GfxTarget t = target_entry_as_gfx(e); return gfx_target_bpp(&t); }
 static void target_alias_sync(TargetEntry *e) {
-	static int off = -1, log = -1; if (off < 0) { off = getenv("RECOMP_GPU_NO_ALIAS_SYNC") != 0; log = getenv("RECOMP_GPU_ALIAS_LOG") != 0; }
+	static int off = -1, log = -1; if (off < 0) { off = getenv("RECOMP_GPU_NO_ALIAS_SYNC") != 0 || !settings_int("alias_sync", 1); log = getenv("RECOMP_GPU_ALIAS_LOG") != 0; }
 	if (off || !e || !e->addr) return;
 	uint32_t lo = e->addr, hi = e->addr + target_bytes(e);
 	int bpp = target_bpp_entry(e);
