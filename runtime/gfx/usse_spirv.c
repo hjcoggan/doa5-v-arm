@@ -715,6 +715,7 @@ static void du_eval_spv(Gen *g, const UsseDual *v, int dop, const int8_t *sx, ui
 	case DU_FLOG: r[0] = glsl1(s, GLSLLog2, du_src_spv(g, v, sx[0], 0, ok)); break;
 	default: break;   /* DU_INVALID: its mask is 0 */
 	}
+	if (dop >= DU_FRSQ && dop <= DU_FLOG) r[1] = r[2] = r[3] = r[0];   /* scalar result fills every written component, as usse.c's du_eval */
 }
 static void emit_vdual(Gen *g, const UOp *op, int *ok) {
 	UsseDual v; usse_vdual_decode(op, &v);

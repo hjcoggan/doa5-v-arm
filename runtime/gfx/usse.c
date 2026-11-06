@@ -1373,6 +1373,7 @@ static void du_eval(Ctx *cx, const UsseDual *v, int dop, const int8_t *s, float 
 	case DU_FLOG: r[0] = log2f(du_src(cx, v, s[0], 0)); break;
 	default: break;   /* DU_INVALID: its mask is 0 */
 	}
+	if (du_is_scalar(dop)) r[1] = r[2] = r[3] = r[0];   /* a scalar op's result fills every component its mask writes (Vita3K's postprocess_dot_result_for_store): "FLOG i2.y" wrote 0, not log2(x) */
 }
 static void exec_vdual(Ctx *cx, const UOp *op) {
 	UsseDual v; usse_vdual_decode(op, &v);
