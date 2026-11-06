@@ -2385,7 +2385,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 		 * It is one OpSelectionMerge with the else body B first and the then body A after an
 		 * OpBranch to the merge, so the pending entry carries the then-label until the
 		 * unconditional branch at j is reached and the loop is sent to T1. */
-		struct { int else_end, then_start, then_end; uint32_t then_label, merge; } pends[2]; int npend = 0;
+		struct { int else_end, then_start, then_end; uint32_t then_label, merge; } pends[8]; int npend = 0;
 		for (int i = 0; i < n && ok; i++) {
 			const UOp *op = &code[i];
 			while (nloop && loopstack[nloop - 1].end < i) {
@@ -2449,10 +2449,11 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 				if (op->imm == 1 && !op->args[0]) {
 					continue;
 				}
-				if (op->pred_kind != 0 && op->imm > 0 && !op->args[0] && target <= n && npend < 2) {
+				if (op->pred_kind != 0 && op->imm > 0 && !op->args[0] && target <= n && npend < 8) {
 					int j = -1, t2 = -1;   /* the else form above: a later unconditional branch past target */
 					for (int k = i + 1; k < target; k++)
-						if (code[k].op == OP_BR && code[k].pred_kind == 0 && !code[k].args[0] && code[k].imm > 0 && k + (int)code[k].imm > target) { j = k; t2 = k + (int)code[k].imm; break; }
+						if (code[k].op == OP_BR && code[k].pred_kind == 0 && !code[k].args[0] && code[k].imm > 0 && k + (int)code[k].imm > target && (j < 0 || k + (int)code[k].imm == t2)) { j = k; t2 = k + (int)code[k].imm; }   /* the last branch to that end: an else-if chain's inner else ends at an earlier one */
+					if (j > 0 && npend && i < pends[npend - 1].else_end && t2 > pends[npend - 1].else_end) t2 = pends[npend - 1].else_end;   /* nested in an else body (else-if): the inner if/else ends where the outer else body does, and the outer's own end branch goes on to the real end */
 					if (j > 0 && t2 <= n && !(nbr && target > brstack[nbr - 1].end)) {
 						uint32_t p = load(s, t_bool(s), pred_ptr(&g, op->pred_reg));
 						uint32_t taken = op->pred_kind == 1 ? p : result1(s, &s->func, SpvOpLogicalNot, t_bool(s), p);
