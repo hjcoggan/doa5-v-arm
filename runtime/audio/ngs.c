@@ -231,8 +231,13 @@ static void reverb_run(Reverb *r, const ReverbSet *s, const float *in, float *ou
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static Voice voices[512];
 static int nvoices;
-static Patch patches[1024];
-static int npatches;
+/* the patch table: a slot is reused as soon as the game removes its patch, and the table grows if every slot is
+ * live. It used to be a fixed 1024 with no reuse -- DOA5+ creates thousands in one match (9221 in a long run), so
+ * after the first 1024 every new patch overwrote the last slot and answered to one shared handle: patches removed
+ * each other, a voice could lose its dry send and reach the mix only through the reverb (a "distant" mix that never
+ * came back). Handles are the slot index, so a reused slot's handle is the one the game just released. */
+static Patch *patches;
+static int npatches, cap_patches;
 static uint32_t granularity = 512, sample_rate = 48000;
 static int logged;
 
@@ -380,9 +385,21 @@ static void h_rack_release(Cpu *c) {
 static void h_rack_voice(Cpu *c) { uint32_t n = RD32(A0); WR32(A2, A1 < n ? RD32(A0 + 8 + 4 * A1) : 0); RET(A1 < n ? 0 : 0x804a0005u); }
 
 /* ---- patches: (SceNgsPatchSetupInfo*: source voice, output index, sub index, destination, input index, *patch) */
+static Patch *patch_new(void) {   /* a free slot, else the table grown by half again */
+	for (int i = 0; i < npatches; i++) if (!patches[i].active) return &patches[i];
+	if (npatches == cap_patches) {
+		int had = cap_patches, ncap = had ? had + had / 2 : 1024;
+		Patch *np = realloc(patches, sizeof(Patch) * (size_t)ncap);
+		if (!np) return 0;
+		patches = np; cap_patches = ncap;
+		if (had) fprintf(stderr, "    ngs: patch table grown to %d (every slot live)\n", ncap);   /* (the first 1024 is the base size) */
+	}
+	return &patches[npatches++];
+}
 static void h_patch_create(Cpu *c) {
 	pthread_mutex_lock(&lock);
-	Patch *p = &patches[npatches < 1024 ? npatches++ : 1023];
+	Patch *p = patch_new();
+	if (!p) { pthread_mutex_unlock(&lock); RET(0x804a0005u); return; }
 	p->src = RD32(A0); p->dst = RD32(A0 + 12); p->input = RD32(A0 + 16);
 	p->vol[0][0] = p->vol[1][1] = 1; p->vol[0][1] = p->vol[1][0] = 0; p->active = 1;
 	pthread_mutex_unlock(&lock);
