@@ -54,6 +54,7 @@ enum { DEF_MASTER = 1, DEF_SIMPLE, DEF_REVERB, DEF_OTHER, DEF_SCREAM, DEF_SCREAM
 typedef struct Voice {
 	uint32_t handle, def;
 	int playing, paused;
+	int free_slot;                         /* released with its rack: h_rack_init hands the slot to the next voice */
 	uint32_t params[MAX_MODULES];          /* guest memory: each module's parameter block */
 	int bypass[MAX_MODULES];
 	/* player state */
@@ -342,6 +343,13 @@ static void h_sys_init(Cpu *c) {   /* (memory, ?, SceNgsSystemInitParams*, *hand
 	WR32(A3, gobj(16)); RET(0);
 }
 static void h_rack_mem(Cpu *c) { WR32(A2, 0x1000); RET(0); }   /* (system, description, *size) */
+/* a voice slot: one released with its rack first (the game creates racks as it needs them -- a mode change, a
+ * match -- and releases them after; without reuse 512 live voices would end the sound for good), else a new one */
+static Voice *voice_alloc(void) {
+	for (int i = 0; i < nvoices; i++) if (voices[i].free_slot) { memset(&voices[i], 0, sizeof voices[i]); return &voices[i]; }
+	if (nvoices < 512) { memset(&voices[nvoices], 0, sizeof voices[0]); return &voices[nvoices++]; }
+	return 0;
+}
 /* (system, buffer info, SceNgsRackDescription*: definition, voices, channels per voice, ..., *rack) */
 static void h_rack_init(Cpu *c) {
 	uint32_t desc = A2, def = RD32(desc), n = RD32(desc + 4), kind = def ? RD32(def) : DEF_OTHER;
@@ -349,9 +357,9 @@ static void h_rack_init(Cpu *c) {
 	uint32_t rbuf = A1 ? RD32(A1) : 0, rbytes = A1 ? RD32(A1 + 4) : 0;   /* SceNgsBufferInfo {data, size} */
 	WR32(rack, n);
 	pthread_mutex_lock(&lock);
-	for (uint32_t i = 0; i < n && nvoices < 512; i++) {
-		Voice *v = &voices[nvoices++];
-		memset(v, 0, sizeof *v);
+	for (uint32_t i = 0; i < n; i++) {
+		Voice *v = voice_alloc();
+		if (!v) { fprintf(stderr, "    ngs: no voice slot left (512 live)\n"); break; }
 		v->handle = gobj(16); v->def = kind; v->rack = rack; v->rack_buf = rbuf; v->rack_bytes = rbytes;
 		for (int m = 0; m < MAX_MODULES; m++) v->params[m] = gobj(PARAMS_SIZE);
 		if (kind == DEF_MASTER) { v->mix = calloc(2 * 4096, 2); v->acc = calloc(2 * 4096, sizeof(float)); v->playing = 1; }
@@ -375,7 +383,9 @@ static void h_rack_release(Cpu *c) {
 		v->playing = 0; v->paused = 0; v->releasing = 0; v->released_out = 0;
 		for (int m = 0; m < MAX_MODULES; m++) { v->params[m] = 0; v->bypass[m] = 0; }
 		for (int p = 0; p < npatches; p++) if (patches[p].active && (patches[p].src == v->handle || patches[p].dst == v->handle)) patches[p].active = 0;
-		v->rack = 0;
+		free(v->mix); free(v->acc); free(v->rv); v->mix = 0; v->acc = 0; v->rv = 0;
+		if (v->at9) { Atrac9ReleaseHandle(v->at9); v->at9 = 0; }
+		v->handle = 0; v->rack = 0; v->free_slot = 1;   /* (a stale handle no longer resolves: voice_of scans by handle) */
 		n++;
 	}
 	pthread_mutex_unlock(&lock);
