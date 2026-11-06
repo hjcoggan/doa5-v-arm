@@ -2465,6 +2465,11 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 						continue;
 					}
 				}
+				/* a branch out of an if/else's else body to the if/else's own end (DOA5+'s eyeball vertex program: its lighting
+				 * switches skip the rest): the then body can't run on that path, so skipping to the else body's end is the
+				 * same thing -- and stays inside the construct (a jump past it left SPIR-V that spirv-val refuses and the
+				 * eyes unrasterised) */
+				if (npend && i < pends[npend - 1].else_end && target == pends[npend - 1].then_end) target = pends[npend - 1].else_end;
 				if (op->pred_kind == 0 || op->imm <= 0 || op->args[0] || target > n || (nbr && target > brstack[nbr - 1].end) || nbr >= 8) {
 					snprintf(m.err, sizeof m.err, "branch at instruction %d (%s, offset %d) outside the structured forms translated", i, op->pred_kind ? "predicated" : "unconditional", (int)op->imm); ok = 0; break;
 				}

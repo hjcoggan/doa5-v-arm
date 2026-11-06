@@ -5,7 +5,7 @@ REGION = "EU"
 BASE = "doa5"               # file stem of the recompiled C and the image
 SPLIT = 32                  # 32,784 functions found: ~10 MB of C a part
 MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult"   # the game ships libc/libfios2/libult in sce_module; libgxm/libgpu are the firmware's; SceMp4 is the host HLE (mp4.c)
-RUN_ENV = "RECOMP_GPU_NO_ALIAS_SYNC=1 RECOMP_NO_CULL=1"   # play: the GPU renderer, the real clock; no target alias sync -- its per-scene
+RUN_ENV = "RECOMP_GPU_NO_ALIAS_SYNC=1"   # play: the GPU renderer, the real clock; no target alias sync -- its per-scene
                             # GPU->CPU readback cost 3 ms x 7 scenes a frame (14 fps menus/cutscenes); the game's frames are
                             # identical without it (menus, VERSUS, story cutscene checked)
 TEST_ENV = "RECOMP_GFX=gpu RECOMP_CLOCK=fixed"   # bring-up: the GPU path (the gate's reference is made later)
