@@ -5748,7 +5748,10 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	 * convention culls the full-screen ambient pass entirely. RECOMP_GPU_CULL_SWAP=1: that other
 	 * convention, for diagnosis. */
 	static int swap = -1; if (swap < 0) swap = getenv("RECOMP_GPU_CULL_SWAP") != 0;
-	int cull_sdl = g_points_draw ? SDL_GPU_CULLMODE_NONE : d->cull == 1 ? (swap ? SDL_GPU_CULLMODE_FRONT : SDL_GPU_CULLMODE_BACK)
+	/* RECOMP_NO_CULL=1 (the same switch gfx_soft.c has): DOA5+'s eyeballs are wound opposite to the head under the
+	 * same cull mode, so backface culling drops them; culling off matches the console */
+	static int nocull = -1; if (nocull < 0) { nocull = getenv("RECOMP_NO_CULL") != 0; if (nocull) fprintf(stderr, "    gpu: RECOMP_NO_CULL: backface culling off\n"); }
+	int cull_sdl = nocull ? SDL_GPU_CULLMODE_NONE : g_points_draw ? SDL_GPU_CULLMODE_NONE : d->cull == 1 ? (swap ? SDL_GPU_CULLMODE_FRONT : SDL_GPU_CULLMODE_BACK)
 	             : d->cull == 2 ? (swap ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT) : SDL_GPU_CULLMODE_NONE;
 	uint64_t tp0 = us_now();
 	PipeEntry *pipe = get_pipeline(d, vs, fs, scene_target.depth != 0, scene_entry->kind, ds_depth_ok, ds_stencil_ok, cull_sdl, -1, 0);

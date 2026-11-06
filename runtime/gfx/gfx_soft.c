@@ -2090,7 +2090,12 @@ static void record_tri_clipped(const Vert *a, const Vert *b, const Vert *c3) {
 	 * driver's CULL_CW/CULL_CCW name the winding to cull by that same (clip-space, pre-viewport)
 	 * sense (Vita3K's gxm_to_vulkan.cpp maps CULL_CW to culling the winding opposite its own
 	 * CCW-is-front pipeline convention, i.e. literally "cull clockwise"). */
-	if (d->cull == 1 || d->cull == 2) {
+	/* RECOMP_NO_CULL=1: no backface culling, whatever the game set. DOA5+ draws its eyeballs with the same cull mode
+	 * as the head but the opposite winding, so the cull test drops every eye triangle and the sockets render as dark
+	 * hollows; with culling off the model matches the console (the character select and a fight both checked). The
+	 * pack turns it on. A pack's switch rather than a rule because culling is right for everything else. */
+	static int nocull = -1; if (nocull < 0) nocull = getenv("RECOMP_NO_CULL") != 0;
+	if (!nocull && (d->cull == 1 || d->cull == 2)) {
 		float area_ndc = (xn[1] - xn[0]) * (yn[2] - yn[0]) - (xn[2] - xn[0]) * (yn[1] - yn[0]);
 		if ((d->cull == 1 && area_ndc < 0) || (d->cull == 2 && area_ndc > 0)) { ST(rec, st_culled); return; }
 	}
