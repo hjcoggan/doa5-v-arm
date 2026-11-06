@@ -1173,7 +1173,10 @@ static SDL_GPUSampler *tex_sampler(TexEntry *e, int minf, int magf, int addru, i
 	if (minf && aniso_cur > 1) {   /* with trilinear mips: Apple GPUs filter anisotropically only between levels (with nearest mips, 16x changed no pixel of a replay), and blending levels removes the mip bands the Vita's nearest-mip sampling shows on floors */
 		ci.enable_anisotropy = true; ci.max_anisotropy = (float)aniso_cur; ci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
 	}
-	return e->samp[mi][magf][iu][iv] = SDL_CreateGPUSampler(gpu(), &ci);
+	SDL_GPUSampler *made = SDL_CreateGPUSampler(gpu(), &ci);
+	if (!made) { static int said; if (!said++) fprintf(stderr, "    gpu: sampler create failed (min %d mag %d mip %d addr %d/%d aniso %d): %s\n",
+	                                                        (int)ci.min_filter, (int)ci.mag_filter, (int)ci.mipmap_mode, (int)mu, (int)mv, (int)ci.max_anisotropy, SDL_GetError()); }
+	return e->samp[mi][magf][iu][iv] = made;
 }
 static void views_release_samplers(void);   /* below, with the views */
 static void tex_release_samplers(TexEntry *e) {
@@ -2380,6 +2383,15 @@ static SDL_GPUSampler *nearest_sampler(void) {
 	if (!smp) { SDL_GPUSamplerCreateInfo ci = {0}; ci.min_filter = ci.mag_filter = SDL_GPU_FILTER_NEAREST; ci.address_mode_u = ci.address_mode_v = ci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE; smp = SDL_CreateGPUSampler(gpu(), &ci); }
 	return smp;
 }
+/* one texture, nearest, on fragment slot 0: 0 when SDL has no sampler to give. SDL's backends dereference a null
+ * sampler (METAL_BindFragmentSamplers reads its first word), so a caller must not bind one. */
+static int bind_one_sampler(SDL_GPURenderPass *rp, SDL_GPUTexture *tex) {
+	SDL_GPUSampler *s = nearest_sampler();
+	if (!s || !tex) return 0;
+	SDL_GPUTextureSamplerBinding b = { tex, s };
+	SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
+	return 1;
+}
 /* the preload: a full-screen triangle whose fragment writes the decoded depth (gl_FragDepth from an
  * R32F texture), then one pass per stencil bit that REPLACEs that bit where an R8 texture has it
  * set (a fragment can't write stencil; the reference value and write mask per pass can). MSL here, SPIR-V
@@ -2489,8 +2501,8 @@ static void depth_preload_from_guest(DepthEntry *de, const GfxTarget *t) {
 		.stencil_load_op = SDL_GPU_LOADOP_CLEAR, .stencil_store_op = SDL_GPU_STOREOP_STORE, .clear_stencil = 0 };
 	SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, 0, 0, &dti);
 	SDL_BindGPUGraphicsPipeline(rp, preload_pipeline(-1)); SDL_SetGPUViewport(rp, &vp); SDL_SetGPUScissor(rp, &sc);
-	SDL_GPUTextureSamplerBinding tb = { de->pre_z, nearest_sampler() }; SDL_BindGPUFragmentSamplers(rp, 0, &tb, 1);
-	SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0); SDL_EndGPURenderPass(rp);
+	if (bind_one_sampler(rp, de->pre_z)) SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+	SDL_EndGPURenderPass(rp);
 	/* passes 2..: each stencil bit any pixel has */
 	for (int b = 0; b < 8; b++) {
 		if (!(stbits & (1 << b)) || !preload_pipeline(b)) continue;
@@ -2498,9 +2510,9 @@ static void depth_preload_from_guest(DepthEntry *de, const GfxTarget *t) {
 		rp = SDL_BeginGPURenderPass(cmd, 0, 0, &sti);
 		SDL_BindGPUGraphicsPipeline(rp, preload_pipeline(b)); SDL_SetGPUViewport(rp, &vp); SDL_SetGPUScissor(rp, &sc);
 		SDL_SetGPUStencilReference(rp, (Uint8)(1u << b));
-		SDL_GPUTextureSamplerBinding sb = { de->pre_s, nearest_sampler() }; SDL_BindGPUFragmentSamplers(rp, 0, &sb, 1);
 		uint32_t bit = 1u << b; SDL_PushGPUFragmentUniformData(cmd, 0, &bit, sizeof bit);
-		SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0); SDL_EndGPURenderPass(rp);
+		if (bind_one_sampler(rp, de->pre_s)) SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+		SDL_EndGPURenderPass(rp);
 	}
 	SDL_SubmitGPUCommandBuffer(cmd);
 	SDL_ReleaseGPUTransferBuffer(gpu(), xz); SDL_ReleaseGPUTransferBuffer(gpu(), xs);
@@ -4237,7 +4249,7 @@ static void view_pass(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *dst, SDL_GPUTex
 	SDL_GPUColorTargetInfo ct = { .texture = dst, .load_op = SDL_GPU_LOADOP_DONT_CARE, .store_op = SDL_GPU_STOREOP_STORE };
 	SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, 0);
 	int baked; SDL_BindGPUGraphicsPipeline(rp, view_pipeline_for(from_depth, u, &baked));   /* RECOMP_GPU_VIEW_FAST: a per-view baked pipeline (no uniform buffer -- u is baked into it) or the general one at u's format */
-	SDL_GPUTextureSamplerBinding b = { src, nearest_sampler() }; SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
+	if (!bind_one_sampler(rp, src)) { SDL_EndGPURenderPass(rp); return; }
 	if (!baked) SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof *u);
 	SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
 	SDL_EndGPURenderPass(rp);
@@ -4295,7 +4307,7 @@ int gfx_gpu_transfer_downscale(uint32_t src, uint32_t sw, uint32_t sh, uint32_t 
 	SDL_GPUColorTargetInfo ct = { .texture = d->color, .load_op = SDL_GPU_LOADOP_DONT_CARE, .store_op = SDL_GPU_STOREOP_STORE };
 	SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, 0);
 	SDL_BindGPUGraphicsPipeline(rp, p);
-	SDL_GPUTextureSamplerBinding b = { s->color, nearest_sampler() }; SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
+	if (!bind_one_sampler(rp, s->color)) { SDL_EndGPURenderPass(rp); SDL_SubmitGPUCommandBuffer(cmd); return 0; }
 	SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
 	SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
 	SDL_EndGPURenderPass(rp);
@@ -5998,6 +6010,13 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	}
 
 	for (int k = 0; k < fs->nldst && k < 8 && ntsb < 25; k++) { tsb[ntsb].texture = ldst_te[k]->color; tsb[ntsb].sampler = nearest_sampler(); ntsb++; }   /* the LDST targets, after the samplers and the framebuffer copy (emit_ldst_target's bindings) */
+	/* a binding SDL can't take: a sampler that failed to create (Metal's newSamplerStateWithDescriptor can return nil)
+	 * or a texture that isn't there. SDL's backends dereference both -- METAL_BindFragmentSamplers does `ldr x1, [sampler]`
+	 * -- so an empty one was an intermittent segfault at boot. Such a draw goes to the software path instead. */
+	{ int empty = 0; for (int k = 0; k < ntsb; k++) if (!tsb[k].sampler || !tsb[k].texture) empty = 1;
+	  for (int k = 0; k < vs->nsmp && k < 16; k++) if (!vtsb[k].sampler || !vtsb[k].texture) empty = 1;
+	  if (empty) { static int said; if (!said++) fprintf(stderr, "    gpu: a sampler binding came up empty (program %#x/%#x, %d of %d): the software path draws it\n", d->vprog, d->fprog, ntsb, ntsb);
+	               free(check_pre); soft_fallback(d, "empty sampler binding"); return; } }
 
 	/* record the draw (see "the draw batch"): binding its textures above may have flushed the draws
 	 * before it (a re-upload) or put a view pass after them; a FRAGCOLOR draw gets its framebuffer
